@@ -61,8 +61,8 @@ class COSSpectrum(object):
                                     self.data['BACKGROUND'][1][i10:i11]])
         self.net = np.array([self.data['NET'][0][i00:i01],
                              self.data['NET'][1][i10:i11]])
-        self.exp_time = np.array([self.data['EXPTIME'][0][i00:i01],
-                                  self.data['EXPTIME'][1][i10:i11]])
+        self.exp_time = np.array([self.data['EXPTIME'][0],
+                                  self.data['EXPTIME'][1]])
 
         # Instantiating useful global variables
         self.sensitivity = None
@@ -112,3 +112,12 @@ class COSSpectrum(object):
                              'accepted.')
 
         return int_flux, uncertainty
+
+
+# STIS spectrum class
+class STISSpectrum(object):
+    """
+
+    """
+    def __init__(self):
+        pass
