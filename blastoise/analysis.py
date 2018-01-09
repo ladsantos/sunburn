@@ -22,7 +22,7 @@ class COSSpectrum(object):
 
     """
     def __init__(self, x1d_file, corrtag_file,
-                 good_pixel_limits=((1250, 15180), (1015, 15030))):
+                 good_pixel_limits=((1260, 15170), (1025, 15020))):
         self.path = x1d_file
         self.gpl = good_pixel_limits
 
@@ -73,7 +73,7 @@ class COSSpectrum(object):
 
         """
         self.sensitivity = self.flux / self.net / self.exp_time
-        self.error = np.sqrt(self.gross_counts + 1.0) * self.sensitivity
+        self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
 
     # Compute the integrated flux in a given wavelength range
     def integrated_flux(self, wavelength_range,
@@ -87,24 +87,37 @@ class COSSpectrum(object):
         Returns:
 
         """
-        min_wl = tools.nearest_index(self.wavelength, wavelength_range[0])
-        max_wl = tools.nearest_index(self.wavelength, wavelength_range[1])
-        int_flux = simps(self.flux[min_wl:max_wl],
-                         x=self.wavelength[min_wl:max_wl])
+        if wavelength_range[0] > np.min(self.wavelength[0]) and \
+                wavelength_range[1] < np.max(self.wavelength[0]):
+            ind = 0
+        elif wavelength_range[0] > np.min(self.wavelength[1]) and \
+                wavelength_range[1] < np.max(self.wavelength[1]):
+            ind = 1
+        else:
+            raise ValueError('The requested wavelength range is not available'
+                             'in this spectrum.')
+
+        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
+        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+        # The following line is hacky, but it works
+        delta_wl = self.wavelength[ind][1:] - self.wavelength[ind][:-1]
+        int_flux = simps(self.flux[ind][min_wl:max_wl],
+                         x=self.wavelength[ind][min_wl:max_wl])
 
         # Compute the uncertainty of the integrated flux
         if uncertainty_method == 'quadratic_sum':
-            uncertainty = np.sqrt(np.sum(self.error[min_wl:max_wl] ** 2))
+            uncertainty = np.sqrt(np.sum((delta_wl[min_wl:max_wl] *
+                                          self.error[ind][min_wl:max_wl]) ** 2))
         elif uncertainty_method == 'bootstrap':
             n_samples = 10000
             # Draw a sample of spectra and compute the fluxes for each
-            samples = np.random.normal(loc=self.flux[min_wl:max_wl],
-                                       scale=self.error[min_wl:max_wl],
+            samples = np.random.normal(loc=self.flux[ind][min_wl:max_wl],
+                                       scale=self.error[ind][min_wl:max_wl],
                                        size=[n_samples, max_wl - min_wl])
             fluxes = []
             for i in range(n_samples):
                 fluxes.append(simps(samples[i],
-                                    x=self.wavelength[min_wl:max_wl]))
+                                    x=self.wavelength[ind][min_wl:max_wl]))
             fluxes = np.array(fluxes)
             uncertainty = np.std(fluxes)
         else:
