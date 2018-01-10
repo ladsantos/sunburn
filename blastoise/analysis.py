@@ -14,28 +14,28 @@ from astropy.time import Time
 from blastoise import tools
 from scipy.integrate import simps
 
-__all__ = ["COSSpectrum"]
+__all__ = ["UVSpectrum"]
 
 
-# COS spectra class
-class COSSpectrum(object):
+# The general ultraviolet spectrum object
+class UVSpectrum(object):
     """
 
     """
-    def __init__(self, x1d_file, corrtag_file,
-                 good_pixel_limits=((1260, 15170), (1025, 15020))):
-        self.path = x1d_file
+    def __init__(self, dataset_name, good_pixel_limits=None):
+        self.x1d = dataset_name + '_x1d.fits'
+        self.corrtag = dataset_name + '_corrtag_a.fits'
         self.gpl = good_pixel_limits
 
         # Read data from x1d file
-        with fits.open(self.path) as self.orbit:
-            self.header = self.orbit[0].header
-            self.data = self.orbit['SCI'].data
+        with fits.open(self.x1d) as f:
+            self.header = f[0].header
+            self.data = f['SCI'].data
 
         # Read some metadata from the corrtag file
-        with fits.open(corrtag_file) as self.meta:
-            self.start_JD = Time(self.meta[3].header['EXPSTRTJ'], format='jd')
-            self.end_JD = Time(self.meta[3].header['EXPENDJ'], format='jd')
+        with fits.open(self.corrtag) as f:
+            self.start_JD = Time(f[3].header['EXPSTRTJ'], format='jd')
+            self.end_JD = Time(f[3].header['EXPENDJ'], format='jd')
 
         # If ``good_pixel_limits`` is set to ``None``, then the data will be
         # retrieved from the file in its entirety. Otherwise, it will be
@@ -64,6 +64,16 @@ class COSSpectrum(object):
                              self.data['NET'][1][i10:i11]])
         self.exp_time = np.array([self.data['EXPTIME'][0],
                                   self.data['EXPTIME'][1]])
+
+
+# COS spectra class
+class COSSpectrum(UVSpectrum):
+    """
+
+    """
+    def __init__(self, dataset_name,
+                 good_pixel_limits=((1260, 15170), (1025, 15020))):
+        super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits)
 
         # Instantiating useful global variables
         self.sensitivity = None
@@ -168,6 +178,15 @@ class COSSpectrum(object):
 
 # STIS spectrum class
 class STISSpectrum(object):
+    """
+
+    """
+    def __init__(self):
+        pass
+
+
+# The light curve object
+class LightCurve(object):
     """
 
     """
