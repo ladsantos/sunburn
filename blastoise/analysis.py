@@ -98,15 +98,7 @@ class COSSpectrum(UVSpectrum):
         Returns:
 
         """
-        if wavelength_range[0] > np.min(self.wavelength[0]) and \
-                wavelength_range[1] < np.max(self.wavelength[0]):
-            ind = 0
-        elif wavelength_range[0] > np.min(self.wavelength[1]) and \
-                wavelength_range[1] < np.max(self.wavelength[1]):
-            ind = 1
-        else:
-            raise ValueError('The requested wavelength range is not available'
-                             'in this spectrum.')
+        ind = tools.pick_side(self.wavelength, wavelength_range)
 
         min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
         max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
@@ -148,15 +140,7 @@ class COSSpectrum(UVSpectrum):
         Returns:
 
         """
-        if wavelength_range[0] > np.min(self.wavelength[0]) and \
-                wavelength_range[1] < np.max(self.wavelength[0]):
-            ind = 0
-        elif wavelength_range[0] > np.min(self.wavelength[1]) and \
-                wavelength_range[1] < np.max(self.wavelength[1]):
-            ind = 1
-        else:
-            raise ValueError('The requested wavelength range is not available'
-                             'in this spectrum.')
+        ind = tools.pick_side(self.wavelength, wavelength_range)
 
         min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
         max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])

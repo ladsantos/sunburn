@@ -25,3 +25,30 @@ def nearest_index(array, target_value):
     right = array[index]
     index -= target_value - left < right - target_value
     return index
+
+
+def pick_side(wavelength_array, wavelength_range):
+    """
+    Finds which side (or index) of the chip corresponds to the requested
+    wavelength range.
+
+    Args:
+        wavelength_array (``numpy.array``): The wavelength array read from a
+            ``UVSpectrum`` object.
+        wavelength_range (array-like): Upper and lower limit of wavelength.
+
+    Returns:
+        index (``int``): Index of the side (or chip) where the requested
+            wavelength falls into.
+    """
+    if wavelength_range[0] > np.min(wavelength_array[0]) and \
+            wavelength_range[1] < np.max(wavelength_array[0]):
+        index = 0
+    elif wavelength_range[0] > np.min(wavelength_array[1]) and \
+            wavelength_range[1] < np.max(wavelength_array[1]):
+        index = 1
+    else:
+        raise ValueError('The requested wavelength range is not available'
+                         'in this spectrum.')
+
+    return index
