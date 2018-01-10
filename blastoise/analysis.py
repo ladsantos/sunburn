@@ -10,6 +10,7 @@ from __future__ import (division, print_function, absolute_import,
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
+from astropy.time import Time
 from blastoise import tools
 from scipy.integrate import simps
 
@@ -33,8 +34,8 @@ class COSSpectrum(object):
 
         # Read some metadata from the corrtag file
         with fits.open(corrtag_file) as self.meta:
-            self.start_JD = self.meta[3].header['EXPSTRTJ']
-            self.end_JD = self.meta[3].header['EXPENDJ']
+            self.start_JD = Time(self.meta[3].header['EXPSTRTJ'], format='jd')
+            self.end_JD = Time(self.meta[3].header['EXPENDJ'], format='jd')
 
         # If ``good_pixel_limits`` is set to ``None``, then the data will be
         # retrieved from the file in its entirety. Otherwise, it will be
@@ -125,6 +126,44 @@ class COSSpectrum(object):
                              'accepted.')
 
         return int_flux, uncertainty
+
+    # Plot the spectrum
+    def plot_spectrum(self, wavelength_range, plot_uncertainties=False):
+        """
+
+        Args:
+            wavelength_range:
+            plot_uncertainties:
+
+        Returns:
+
+        """
+        if wavelength_range[0] > np.min(self.wavelength[0]) and \
+                wavelength_range[1] < np.max(self.wavelength[0]):
+            ind = 0
+        elif wavelength_range[0] > np.min(self.wavelength[1]) and \
+                wavelength_range[1] < np.max(self.wavelength[1]):
+            ind = 1
+        else:
+            raise ValueError('The requested wavelength range is not available'
+                             'in this spectrum.')
+
+        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
+        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+
+        # Finally plot it
+        if plot_uncertainties is False:
+            plt.plot(self.wavelength[ind][min_wl:max_wl],
+                     self.flux[ind][min_wl:max_wl],
+                     label=self.start_JD.value)
+        else:
+            plt.errorbar(self.wavelength[ind][min_wl:max_wl],
+                         self.flux[ind][min_wl:max_wl],
+                         yerr=self.error[ind][min_wl:max_wl],
+                         fmt='.',
+                         label=self.start_JD.value)
+        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+        plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
 
 
 # STIS spectrum class
