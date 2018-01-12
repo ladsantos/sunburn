@@ -9,9 +9,11 @@ from __future__ import (division, print_function, absolute_import,
 
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.pylab as pylab
+import astropy.units as u
 from astropy.io import fits
 from astropy.time import Time
-from blastoise import tools
+from . import tools
 from scipy.integrate import simps
 
 __all__ = []
@@ -22,19 +24,66 @@ class Visit(object):
     """
 
     """
-    def __init__(self):
+    def __init__(self, dataset_name, instrument, good_pixel_limits=None,
+                 date=None):
         self.orbit = {}
+        self.date = date
 
-    def append_orbit(self, spectrum):
+        for i in range(len(dataset_name)):
+            if instrument == 'cos':
+                self.orbit[dataset_name[i]] = \
+                    COSSpectrum(dataset_name[i], good_pixel_limits)
+                self.orbit[dataset_name[i]].compute_proper_error()
+            elif instrument == 'stis':
+                raise NotImplementedError('STIS instrument not implemented '
+                                          'yet.')
+
+        # If no visit date is provided by the user, figure it out from the
+        # observation data
+        if self.date is None:
+            pass
+
+    # Plot all the spectra in a wavelength range
+    def plot_spectra(self, wavelength_range, uncertainties=False,
+                     figure_sizes=(9.0, 6.5), axes_font_size=18,
+                     legend_font_size=13):
         """
 
         Args:
-            spectrum (``UVSpectrum``):
+            wavelength_range:
+            uncertainties:
+            figure_sizes:
+            axes_font_size:
+            legend_font_size:
 
         Returns:
 
         """
-        self.orbit[spectrum.dataset_name] = spectrum
+        pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
+        pylab.rcParams['font.size'] = axes_font_size
+
+        for i in self.orbit:
+            # Use the start time of observation as label
+            label = self.orbit[i].start_JD.iso
+            # Find which side of the chip corresponds to the wavelength range
+            ind = tools.pick_side(self.orbit[i].wavelength, wavelength_range)
+            # Now find which spectrum indexes correspond to the requested
+            # wavelength
+            min_wl = tools.nearest_index(self.orbit[i].wavelength[ind],
+                                         wavelength_range[0])
+            max_wl = tools.nearest_index(self.orbit[i].wavelength[ind],
+                                         wavelength_range[1])
+            if uncertainties is False:
+                plt.plot(self.orbit[i].wavelength[ind][min_wl:max_wl],
+                         self.orbit[i].flux[ind][min_wl:max_wl],
+                         label=label)
+            else:
+                plt.errorbar(self.orbit[i].wavelength[ind][min_wl:max_wl],
+                             self.orbit[i].flux[ind][min_wl:max_wl],
+                             yerr=self.orbit[i].error[ind][min_wl:max_wl],
+                             fmt='.', label=label)
+        plt.legend(fontsize=legend_font_size)
+        plt.show()
 
 
 # The general ultraviolet spectrum object
@@ -42,11 +91,18 @@ class UVSpectrum(object):
     """
 
     """
-    def __init__(self, dataset_name, good_pixel_limits=None):
+    def __init__(self, dataset_name, good_pixel_limits=None, units=None):
         self.dataset_name = dataset_name
         self.x1d = dataset_name + '_x1d.fits'
         self.corrtag = dataset_name + '_corrtag_a.fits'
         self.gpl = good_pixel_limits
+
+        if units is None:
+            self.units = {'wavelength': u.angstrom,
+                          'flux': u.erg / u.s / u.cm ** 2 / u.angstrom,
+                          'exp_time': u.s}
+        else:
+            self.units = units
 
         # Read data from x1d file
         with fits.open(self.x1d) as f:
@@ -83,8 +139,7 @@ class UVSpectrum(object):
                                     self.data['BACKGROUND'][1][i10:i11]])
         self.net = np.array([self.data['NET'][0][i00:i01],
                              self.data['NET'][1][i10:i11]])
-        self.exp_time = np.array([self.data['EXPTIME'][0],
-                                  self.data['EXPTIME'][1]])
+        self.exp_time = self.data['EXPTIME'][0]
 
 
 # COS spectrum class

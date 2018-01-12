@@ -23,10 +23,12 @@ class Transit(object):
 
     """
     def __init__(self, planet_name=None, period=None, transit_midpoint=None,
-                 duration14=None, duration23=None, database='nasa'):
+                 eccentricity=None, duration14=None, duration23=None,
+                 database='nasa'):
         self.name = planet_name
         self.period = period
         self.transit_midpoint = transit_midpoint
+        self.eccentricity = eccentricity
         self.duration14 = duration14
         self.duration23 = duration23
         self.database = database
@@ -39,6 +41,9 @@ class Transit(object):
 
             # Retrieve info from the NASA Exoplanet Archive
             if self.database == 'nasa':
+                # For now use a local table instead of looking up online
+                # because I need to figure out how to add more than one column
+                # to the online query
                 self.planet_properties = \
                     NasaExoplanetArchive.query_planet(
                         self.name, table_path='../data/planets.csv')
@@ -59,9 +64,9 @@ class Transit(object):
         self.system = EclipsingSystem(
             primary_eclipse_time=self.transit_midpoint,
             orbital_period=self.period, duration=self.duration14,
-            name=self.name)
+            eccentricity=self.eccentricity, name=self.name)
 
-    def find_transit(self, jd_range):
+    def next_transit(self, jd_range):
         """
 
         Args:
@@ -90,7 +95,9 @@ class LightCurve(object):
     """
 
     Args:
-        visit (``tuple``): Tuple containing the visit objects
+        visit (``Visit`` object):
+        transit (``Transit`` object):
+        wavelength_range (``list``):
     """
     def __init__(self, visit, transit, wavelength_range):
         self.visit = visit
@@ -98,8 +105,29 @@ class LightCurve(object):
         self.wavelength_range = wavelength_range
 
         # Instantiating useful global variables
-        self.flux = []
+        self.integrated_flux = []
         self.time = []
         self.t_span = []
         self.f_unc = []
+        jd_start = []
+        jd_end = []
+
+        # For each orbit in visit, compute the integrated flux
+        for i in self.visit.orbit:
+            orbit = self.visit.orbit[i]
+            int_f, unc = orbit.integrated_flux(wavelength_range)
+            self.integrated_flux.append(int_f)
+            self.f_unc.append(unc)
+            self.time.append((orbit.start_JD.jd + orbit.end_JD.jd) / 2)
+            self.t_span.append((orbit.end_JD.jd - orbit.start_JD.jd) / 2)
+            jd_start.append(orbit.start_JD)
+            jd_end.append(orbit.end_JD)
+
+        # Figure out the range of julian dates spanned by the visit
+        jd_start = np.array(jd_start)
+        jd_end = np.array(jd_end)
+        self.jd_range = (np.min(jd_start), np.max(jd_end))
+
+        # Now look if there is a transit happening during the visit
+        self.transit_midpoint = self.transit.next_transit(self.jd_range)
 
