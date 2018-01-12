@@ -8,171 +8,98 @@ from __future__ import (division, print_function, absolute_import,
                         unicode_literals)
 
 import numpy as np
-import matplotlib.pyplot as plt
-from astropy.io import fits
+import astropy.units as u
 from astropy.time import Time
-from blastoise import tools
-from scipy.integrate import simps
+from astroplan import EclipsingSystem
+from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive
+from astroquery.exoplanet_orbit_database import ExoplanetOrbitDatabase
 
-__all__ = ["UVSpectrum"]
+
+__all__ = []
 
 
-# The general ultraviolet spectrum object
-class UVSpectrum(object):
+class Transit(object):
     """
 
     """
-    def __init__(self, dataset_name, good_pixel_limits=None):
-        self.x1d = dataset_name + '_x1d.fits'
-        self.corrtag = dataset_name + '_corrtag_a.fits'
-        self.gpl = good_pixel_limits
+    def __init__(self, planet_name=None, period=None, transit_midpoint=None,
+                 duration14=None, duration23=None, database='nasa'):
+        self.name = planet_name
+        self.period = period
+        self.transit_midpoint = transit_midpoint
+        self.duration14 = duration14
+        self.duration23 = duration23
+        self.database = database
 
-        # Read data from x1d file
-        with fits.open(self.x1d) as f:
-            self.header = f[0].header
-            self.data = f['SCI'].data
+        # If period or transit_center_time are not provided, look up the data
+        # from a database
+        if self.period is None or self.transit_midpoint is None:
+            assert isinstance(self.name, str), '``name`` is required to find ' \
+                                               'transit ephemeris.'
 
-        # Read some metadata from the corrtag file
-        with fits.open(self.corrtag) as f:
-            self.start_JD = Time(f[3].header['EXPSTRTJ'], format='jd')
-            self.end_JD = Time(f[3].header['EXPENDJ'], format='jd')
+            # Retrieve info from the NASA Exoplanet Archive
+            if self.database == 'nasa':
+                self.planet_properties = \
+                    NasaExoplanetArchive.query_planet(
+                        self.name, table_path='../data/planets.csv')
+                self.period = self.planet_properties['pl_orbper']
+                self.transit_midpoint = \
+                    Time(self.planet_properties['pl_tranmid'], format='jd')
+                self.duration14 = self.planet_properties['pl_trandur']
 
-        # If ``good_pixel_limits`` is set to ``None``, then the data will be
-        # retrieved from the file in its entirety. Otherwise, it will be
-        # retrieved using the limits established by ``good_pixel_limits``
-        if self.gpl is None:
-            self.gpl = ((0, -1), (0, -1))
-        else:
-            pass
+            # Retrieve info from the Exoplanet Orbit Database
+            elif self.database == 'orbit':
+                self.planet_properties = \
+                    ExoplanetOrbitDatabase.query_planet(self.name)
+                self.period = self.planet_properties['PER']
+                self.transit_midpoint = \
+                    Time(self.planet_properties['TT'], format='jd')
+                self.duration14 = self.planet_properties['T14']
 
-        # Extract the most important information from the data
-        i00 = self.gpl[0][0]
-        i01 = self.gpl[0][1]
-        i10 = self.gpl[1][0]
-        i11 = self.gpl[1][1]
-        self.wavelength = np.array([self.data['WAVELENGTH'][0][i00:i01],
-                                    self.data['WAVELENGTH'][1][i10:i11]])
-        self.flux = np.array([self.data['FLUX'][0][i00:i01],
-                              self.data['FLUX'][1][i10:i11]])
-        self.error = np.array([self.data['ERROR'][0][i00:i01],
-                               self.data['ERROR'][1][i10:i11]])
-        self.gross_counts = np.array([self.data['GCOUNTS'][0][i00:i01],
-                                      self.data['GCOUNTS'][1][i10:i11]])
-        self.background = np.array([self.data['BACKGROUND'][0][i00:i01],
-                                    self.data['BACKGROUND'][1][i10:i11]])
-        self.net = np.array([self.data['NET'][0][i00:i01],
-                             self.data['NET'][1][i10:i11]])
-        self.exp_time = np.array([self.data['EXPTIME'][0],
-                                  self.data['EXPTIME'][1]])
+        self.system = EclipsingSystem(
+            primary_eclipse_time=self.transit_midpoint,
+            orbital_period=self.period, duration=self.duration14,
+            name=self.name)
 
-
-# COS spectra class
-class COSSpectrum(UVSpectrum):
-    """
-
-    """
-    def __init__(self, dataset_name,
-                 good_pixel_limits=((1260, 15170), (1025, 15020))):
-        super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits)
-
-        # Instantiating useful global variables
-        self.sensitivity = None
-
-    # Compute the correct errors for the HST/COS observation
-    def compute_proper_error(self):
-        """
-
-        """
-        self.sensitivity = self.flux / self.net / self.exp_time
-        self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
-
-    # Compute the integrated flux in a given wavelength range
-    def integrated_flux(self, wavelength_range,
-                        uncertainty_method='quadratic_sum'):
+    def find_transit(self, jd_range):
         """
 
         Args:
-            wavelength_range:
-            uncertainty_method:
+            jd_range:
 
         Returns:
 
         """
-        ind = tools.pick_side(self.wavelength, wavelength_range)
+        jd_range = np.array(jd_range)
+        jd0 = Time(jd_range[0], format='jd')
+        jd1 = Time(jd_range[1], format='jd')
 
-        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
-        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
-        # The following line is hacky, but it works
-        delta_wl = self.wavelength[ind][1:] - self.wavelength[ind][:-1]
-        int_flux = simps(self.flux[ind][min_wl:max_wl],
-                         x=self.wavelength[ind][min_wl:max_wl])
+        n_transits = int((jd1 - self.transit_midpoint).value /
+                         self.period.to(u.d).value) - \
+            int((jd0 - self.transit_midpoint).value /
+                self.period.to(u.d).value)
 
-        # Compute the uncertainty of the integrated flux
-        if uncertainty_method == 'quadratic_sum':
-            uncertainty = np.sqrt(np.sum((delta_wl[min_wl:max_wl] *
-                                          self.error[ind][min_wl:max_wl]) ** 2))
-        elif uncertainty_method == 'bootstrap':
-            n_samples = 10000
-            # Draw a sample of spectra and compute the fluxes for each
-            samples = np.random.normal(loc=self.flux[ind][min_wl:max_wl],
-                                       scale=self.error[ind][min_wl:max_wl],
-                                       size=[n_samples, max_wl - min_wl])
-            fluxes = []
-            for i in range(n_samples):
-                fluxes.append(simps(samples[i],
-                                    x=self.wavelength[ind][min_wl:max_wl]))
-            fluxes = np.array(fluxes)
-            uncertainty = np.std(fluxes)
-        else:
-            raise ValueError('This value of ``uncertainty_method`` is not '
-                             'accepted.')
+        midtransit_times = \
+            self.system.next_primary_eclipse_time(jd0, n_eclipses=n_transits)
 
-        return int_flux, uncertainty
-
-    # Plot the spectrum
-    def plot_spectrum(self, wavelength_range, plot_uncertainties=False):
-        """
-
-        Args:
-            wavelength_range:
-            plot_uncertainties:
-
-        Returns:
-
-        """
-        ind = tools.pick_side(self.wavelength, wavelength_range)
-
-        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
-        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
-
-        # Finally plot it
-        if plot_uncertainties is False:
-            plt.plot(self.wavelength[ind][min_wl:max_wl],
-                     self.flux[ind][min_wl:max_wl],
-                     label=self.start_JD.value)
-        else:
-            plt.errorbar(self.wavelength[ind][min_wl:max_wl],
-                         self.flux[ind][min_wl:max_wl],
-                         yerr=self.error[ind][min_wl:max_wl],
-                         fmt='.',
-                         label=self.start_JD.value)
-        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
-        plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
-
-
-# STIS spectrum class
-class STISSpectrum(object):
-    """
-
-    """
-    def __init__(self):
-        pass
+        return midtransit_times
 
 
 # The light curve object
 class LightCurve(object):
     """
 
+    Args:
+        visit (``tuple``): Tuple containing the visit objects
     """
-    def __init__(self):
-        pass
+    def __init__(self, visit, transit, wavelength_range):
+        self.visit = visit
+        self.transit = transit
+        self.wavelength_range = wavelength_range
+
+        # Instantiating useful global variables
+        self.flux = []
+        self.time = []
+        self.t_span = []
+        self.f_unc = []
+
