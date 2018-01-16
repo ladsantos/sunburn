@@ -9,6 +9,9 @@ from __future__ import (division, print_function, absolute_import,
 
 import numpy as np
 import astropy.units as u
+import matplotlib.pyplot as plt
+import matplotlib.pylab as pylab
+import warnings
 from astropy.time import Time
 from astroplan import EclipsingSystem
 from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive
@@ -84,8 +87,12 @@ class Transit(object):
             int((jd0 - self.transit_midpoint).value /
                 self.period.to(u.d).value)
 
-        midtransit_times = \
-            self.system.next_primary_eclipse_time(jd0, n_eclipses=n_transits)
+        if n_transits > 0:
+            midtransit_times = \
+                self.system.next_primary_eclipse_time(jd0,
+                                                      n_eclipses=n_transits)
+        else:
+            midtransit_times = None
 
         return midtransit_times
 
@@ -97,27 +104,23 @@ class LightCurve(object):
     Args:
         visit (``Visit`` object):
         transit (``Transit`` object):
-        wavelength_range (``list``):
     """
-    def __init__(self, visit, transit, wavelength_range):
+    def __init__(self, visit, transit, line_list=None):
         self.visit = visit
         self.transit = transit
-        self.wavelength_range = wavelength_range
+        self.line_list = line_list
 
         # Instantiating useful global variables
         self.integrated_flux = []
         self.time = []
         self.t_span = []
         self.f_unc = []
+
+        # Reading time information
         jd_start = []
         jd_end = []
-
-        # For each orbit in visit, compute the integrated flux
         for i in self.visit.orbit:
             orbit = self.visit.orbit[i]
-            int_f, unc = orbit.integrated_flux(wavelength_range)
-            self.integrated_flux.append(int_f)
-            self.f_unc.append(unc)
             self.time.append((orbit.start_JD.jd + orbit.end_JD.jd) / 2)
             self.t_span.append((orbit.end_JD.jd - orbit.start_JD.jd) / 2)
             jd_start.append(orbit.start_JD)
@@ -130,4 +133,89 @@ class LightCurve(object):
 
         # Now look if there is a transit happening during the visit
         self.transit_midpoint = self.transit.next_transit(self.jd_range)
+        if self.transit_midpoint is None:
+            warnings.warn("No transit was found during this visit.")
 
+    # Compute the flux in a given wavelength range or for a line from the line
+    # list
+    def compute_flux(self, wavelength_range=None, transition=None,
+                     line_index=None, wing=None):
+        """
+
+        Args:
+            wavelength_range:
+            transition:
+            line_index:
+            wing:
+
+        Returns:
+
+        """
+
+        # For each orbit in visit, compute the integrated flux
+        if wavelength_range is None:
+            assert isinstance(self.line_list, dict), 'Either a wavelength ' \
+                                                     'range or the line list ' \
+                                                     'has to be provided.'
+            wavelength_range = \
+                self.line_list[transition][line_index].wavelength_range
+            if wing == 'blue':
+                wavelength_range[1] = \
+                    self.line_list[transition][line_index].central_wavelength
+            if wing == 'red':
+                wavelength_range[0] = \
+                    self.line_list[transition][line_index].central_wavelength
+
+        for i in self.visit.orbit:
+            orbit = self.visit.orbit[i]
+            int_f, unc = orbit.integrated_flux(wavelength_range)
+            self.integrated_flux.append(int_f)
+            self.f_unc.append(unc)
+
+    # Plot the light curve
+    def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
+             label_choice='iso_date', fold=False):
+        """
+
+        Args:
+            figure_sizes:
+            axes_font_size:
+            label_choice:
+
+        Returns:
+
+        """
+        pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
+        pylab.rcParams['font.size'] = axes_font_size
+
+        # Choose label type for each visit
+        if label_choice == 'iso_date':
+            label = (Time(self.jd_range[0], format='jd')).iso
+        elif label_choice == 'jd' or label_choice == 'julian_date':
+            label = (Time(self.jd_range[0], format='jd')).jd
+        elif label_choice is None:
+            label = None
+        else:
+            label = str(label_choice)
+
+        # Plot the integrated fluxes
+        plt.errorbar(self.time, self.integrated_flux, xerr=self.t_span,
+                     yerr=self.f_unc, fmt='o', label=label)
+        plt.xlabel('Julian date')
+        plt.ylabel(r'Integrated flux (erg s$^{-1}$ cm$^{-2}$)')
+
+        # Plot the transit times
+        if self.transit_midpoint is not None:
+            for jd in self.transit_midpoint:
+                plt.axvline(x=jd.jd, ls='--', color='k')
+                plt.axvline(x=jd.jd - self.transit.duration14.to(u.d).value / 2,
+                            color='r')
+                plt.axvline(x=jd.jd + self.transit.duration14.to(u.d).value / 2,
+                            color='r')
+                if self.transit.duration23 is not None:
+                    plt.axvline(
+                        x=jd.jd - self.transit.duration23.to(u.d).value / 2,
+                        ls='-.', color='r')
+                    plt.axvline(
+                        x=jd.jd + self.transit.duration23.to(u.d).value / 2,
+                        ls='-.', color='r')
