@@ -39,14 +39,19 @@ class Visit(object):
             the limits for the red chip, and the second line is for the blue
             chip. If ``None``, use all pixels. Default is ``None``.
     """
-    def __init__(self, dataset_name, instrument, good_pixel_limits=None):
+    def __init__(self, dataset_name, instrument, good_pixel_limits=None,
+                 data_folder=None):
 
         self.orbit = {}
 
         for i in range(len(dataset_name)):
             if instrument == 'cos':
+                if data_folder is None:
+                    path = dataset_name[i]
+                else:
+                    path = data_folder + dataset_name[i]
                 self.orbit[dataset_name[i]] = \
-                    COSSpectrum(dataset_name[i], good_pixel_limits)
+                    COSSpectrum(path, good_pixel_limits)
                 self.orbit[dataset_name[i]].compute_proper_error()
             elif instrument == 'stis':
                 raise NotImplementedError('STIS instrument not implemented '
@@ -57,9 +62,7 @@ class Visit(object):
                      figure_sizes=(9.0, 6.5), axes_font_size=18,
                      legend_font_size=13):
         """
-        Method used to plot all the spectra in the visit. It is necessary to use
-        ``matplotlib.pyplot.plot()`` after running this method to visualize the
-        plot.
+        Method used to plot all the spectra in the visitexamples
 
         Args:
 
