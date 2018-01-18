@@ -16,18 +16,32 @@ from astropy.time import Time
 from . import tools
 from scipy.integrate import simps
 
-__all__ = []
+__all__ = ["Visit", "UVSpectrum", "COSSpectrum", "STISSpectrum"]
 
 
 # HST visit
 class Visit(object):
     """
+    HST visit object. It is used as a container for a collection of HST
+    observational data from a single visit.
 
+    Args:
+
+        dataset_name (``str``): Name of the dataset, as downloaded from MAST.
+            For example, if the 1-d extracted spectrum file is named
+            ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
+
+        instrument (``str``): Instrument name. Currently, the only options
+            available are ``'cos'`` and ``'stis'``.
+
+        good_pixel_limits (``tuple``, optional): Tuple containing the good pixel
+            limits of the detector, with shape (2, 2), where the first line is
+            the limits for the red chip, and the second line is for the blue
+            chip. If ``None``, use all pixels. Default is ``None``.
     """
-    def __init__(self, dataset_name, instrument, good_pixel_limits=None,
-                 date=None):
+    def __init__(self, dataset_name, instrument, good_pixel_limits=None):
+
         self.orbit = {}
-        self.date = date
 
         for i in range(len(dataset_name)):
             if instrument == 'cos':
@@ -38,26 +52,33 @@ class Visit(object):
                 raise NotImplementedError('STIS instrument not implemented '
                                           'yet.')
 
-        # If no visit date is provided by the user, figure it out from the
-        # observation data
-        if self.date is None:
-            pass
-
     # Plot all the spectra in a wavelength range
     def plot_spectra(self, wavelength_range, uncertainties=False,
                      figure_sizes=(9.0, 6.5), axes_font_size=18,
                      legend_font_size=13):
         """
+        Method used to plot all the spectra in the visit. It is necessary to use
+        ``matplotlib.pyplot.plot()`` after running this method to visualize the
+        plot.
 
         Args:
-            wavelength_range:
-            uncertainties:
-            figure_sizes:
-            axes_font_size:
-            legend_font_size:
 
-        Returns:
+            wavelength_range (array-like): Wavelength limits to be plotted,
+                with shape (2, ).
 
+            uncertainties (``bool``, optional): If ``True``, then plot the
+                spectra with their respective uncertainties. Default is
+                ``False``.
+
+            figure_sizes (array-like, optional): Sizes of the x- and y-axes of
+                the plot. Default values are 9.0 for the x-axis and 6.5 for the
+                y-axis.
+
+            axes_font_size (``int``, optional): Font size of the axes marks.
+                Default value is 18.
+
+            legend_font_size (``int``, optional): Font size of the legend.
+                Default value is 13.
         """
         pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
         pylab.rcParams['font.size'] = axes_font_size
@@ -85,13 +106,30 @@ class Visit(object):
         plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
         plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
         plt.legend(fontsize=legend_font_size)
-        plt.show()
 
 
 # The general ultraviolet spectrum object
 class UVSpectrum(object):
     """
+    HST ultraviolet spectrum object, used as a container for the data obtained
+    in one HST UV exposure.
 
+    Args:
+
+        dataset_name (``str``): Name of the dataset, as downloaded from MAST.
+            For example, if the 1-d extracted spectrum file is named
+            ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
+
+        good_pixel_limits (``tuple``, optional): Tuple containing the good pixel
+            limits of the detector, with shape (2, 2), where the first line is
+            the limits for the red chip, and the second line is for the blue
+            chip. If ``None``, use all pixels. Default is ``None``.
+
+        units (``dict``, optional): Python dictionary containing the units of
+            the spectrum. It must contain the units for the indexes
+            ``'wavelength'``, ``'flux'`` and ``'exp_time'``. If ``None``, then
+            the units will be set to angstrom, erg/s/cm**2/angstrom and s for
+            the wavelength, flux and exposure time. Default is ``None``.
     """
     def __init__(self, dataset_name, good_pixel_limits=None, units=None):
         self.dataset_name = dataset_name
@@ -147,7 +185,20 @@ class UVSpectrum(object):
 # COS spectrum class
 class COSSpectrum(UVSpectrum):
     """
+    HST/COS ultraviolet spectrum object, used as a container for the data
+    obtained in one HST/COS UV exposure.
 
+    Args:
+
+        dataset_name (``str``): Name of the dataset, as downloaded from MAST.
+            For example, if the 1-d extracted spectrum file is named
+            ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
+
+        good_pixel_limits (``tuple``, optional): Tuple containing the good pixel
+            limits of the detector, with shape (2, 2), where the first line is
+            the limits for the red chip, and the second line is for the blue
+            chip. If ``None``, use all pixels. Default is
+            ``((1260, 15170), (1025, 15020))``.
     """
     def __init__(self, dataset_name,
                  good_pixel_limits=((1260, 15170), (1025, 15020))):
@@ -159,22 +210,37 @@ class COSSpectrum(UVSpectrum):
     # Compute the correct errors for the HST/COS observation
     def compute_proper_error(self):
         """
-
+        Compute the proper uncertainties of the HST/COS spectrum, following the
+        method proposed by Wilson+ 2017 (ADS code = 2017A&A...599A..75W).
         """
         self.sensitivity = self.flux / self.net / self.exp_time
         self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
 
     # Compute the integrated flux in a given wavelength range
+    # TODO: Offer the option to integrate between doppler shifts from line
+    # center
     def integrated_flux(self, wavelength_range,
                         uncertainty_method='quadratic_sum'):
         """
+        Compute the integrated flux of the COS spectrum in a user-defined
+        wavelength range.
 
         Args:
-            wavelength_range:
-            uncertainty_method:
+
+            wavelength_range (array-like): Lower and upper bounds of the
+                wavelength limits.
+
+            uncertainty_method (``str``, optional): Method to compute the
+                uncertainties of the integrated flux. The options currently
+                available are  ``'quadratic_sum'`` and ``'bootstrap'``. Default
+                is ``'quadratic_sum'``.
 
         Returns:
 
+            int_flux (``float``): Value of the integrated flux.
+
+            uncertainty (``float``): Value of the uncertainty of the integrated
+                flux.
         """
         ind = tools.pick_side(self.wavelength, wavelength_range)
 
@@ -211,13 +277,25 @@ class COSSpectrum(UVSpectrum):
     def plot_spectrum(self, wavelength_range=None, chip_index=None,
                       plot_uncertainties=False):
         """
+        Plot the spectrum, with the option of selecting a specific wavelength
+        range or the red or blue chips of the detector. In order to visualize
+        the plot, it is necessary to run the command
+        ``matplotlib.pyplot.plot()`` after running this method.
 
         Args:
-            wavelength_range:
-            plot_uncertainties:
 
-        Returns:
+            wavelength_range (array-like, optional): Lower and upper bounds of
+                the wavelength limits. If ``None``, then ``chip_index`` must be
+                provided. Default value is ``None``.
 
+            chip_index (``str`` or ``int``, optional): Choose 0 for the red
+                chip, 1 for the blue chip, or use the strings ``'red'`` or
+                ``'blue'``. If ``None``, then ``wavelength_range`` must be
+                provided. Default is ``None``.
+
+            plot_uncertainties (``bool``, optional): If set to ``True``, than
+                the spectrum is plotted with uncertainty bars. Default is
+                ``False``.
         """
 
         if wavelength_range is not None:
@@ -242,6 +320,10 @@ class COSSpectrum(UVSpectrum):
             plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
 
         elif chip_index is not None:
+            if chip_index == 'red':
+                chip_index = 0
+            elif chip_index == 'blue':
+                chip_index = 1
             if plot_uncertainties is False:
                 plt.plot(self.wavelength[chip_index],
                          self.flux[chip_index],
@@ -262,8 +344,5 @@ class COSSpectrum(UVSpectrum):
 
 # STIS spectrum class
 class STISSpectrum(object):
-    """
-
-    """
     def __init__(self):
-        pass
+        raise NotImplementedError('This feature is not implemented yet.')
