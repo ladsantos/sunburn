@@ -21,7 +21,7 @@ setup(
     packages=["sunburn"],
     url="https://github.com/RogueAstro/sunburn",
     license="MIT",
-    description="COS/HST data analysis",
+    description="HST/UV spectra data analysis",
     install_requires=[line.strip() for line in
                       open('requirements.txt', 'r').readlines()],
     classifiers=[
