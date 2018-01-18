@@ -10,13 +10,28 @@ from __future__ import (division, print_function, absolute_import,
 import numpy as np
 
 
-__all__ = []
+__all__ = ["Line", "COSFUVLineList"]
 
 
 # Spectral line object
 class Line(object):
     """
+    Spectral line object.
 
+    Args:
+
+        central_wavelength (``float``):
+
+        wavelength_range (array-like, optional): Lower and upper bounds of the
+            wavelength delimiting the line. If ``None``, then line width must be
+            provided. Default is ``None``.
+
+        line_width (``float``, optional): Line width in angstrom. If ``None``,
+            then a standard value of 0.25 angstrom is used for the line width.
+            Default is ``None``.
+
+        formation_temperature (scalar, optional): Formation temperature of the
+            line, in K. Default value is ``None``.
     """
     def __init__(self, central_wavelength, wavelength_range=None,
                  line_width=None, formation_temperature=None):
@@ -37,19 +52,19 @@ class Line(object):
                                      central_wavelength + standard_line_width]
 
 
-# The line list object
-class LineList(object):
-    """
-
-    """
-    def __init__(self, lines):
-        self.lines = lines
-
-
 # COS/FUV spectral line list class
 class COSFUVLineList(object):
     """
+    Standard FUV line list for the COS instrument.
 
+    Args:
+
+        wavelength_shift (scalar, optional): Wavelength shift, in angstrom, to
+            apply to the  central wavelengths of the spectral lines. Default is
+            0.0.
+
+        range_factor (scalar, optional): Multiplicative factor to apply to the
+            spectral line widths. Default is 1.0.
     """
     def __init__(self, wavelength_shift=0.0, range_factor=1.0):
         self.lines = {
