@@ -18,12 +18,44 @@ from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive
 from astroquery.exoplanet_orbit_database import ExoplanetOrbitDatabase
 
 
-__all__ = []
+__all__ = ["Transit", "LightCurve"]
 
 
 class Transit(object):
     """
+    The transiting exoplanet object. It is used to predict transit events.
 
+    Args:
+
+        planet_name (``str``, optional): Name of the planet. Default is
+            ``None``.
+
+        period (scalar, optional): Orbital period of the planet. If set to
+            ``None``, then the value is going to be retrieved from an online
+            database or a local table. Default is ``None``.
+
+        transit_midpoint (scalar, optional): Value of a known transit midpoint.
+            If set to ``None``, then the value is going to be retrieved from an
+            online database or a local table. Default is ``None``.
+
+        eccentricity (``float``, optional): Value of the orbital eccentricity.
+            If set to ``None``, then the value is going to be retrieved from an
+            online database or a local table. Default is ``None``.
+
+        duration14 (scalar, optional): Value of the transit duration from the
+            first to fourth points of contact. If set to ``None``, then the
+            value is going to be retrieved from an online database or a local
+            table. Default is ``None``.
+
+        duration23 (scalar, optional): Value of the transit duration from the
+            second to third points of contact. If set to ``None``, then the
+            value  is going to be retrieved from an online database or a local
+            table. Default is ``None``.
+
+        database (``str``, optional): Database choice to look up the exoplanet
+            parameters. The current options available are ``'nasa'`` and
+            ``'orbit'``, which correspond to the NASA Exoplanet Archive and the
+            Exoplanet Orbit Database, respectively. Default is ``'nasa'``.
     """
     def __init__(self, planet_name=None, period=None, transit_midpoint=None,
                  eccentricity=None, duration14=None, duration23=None,
@@ -69,14 +101,19 @@ class Transit(object):
             orbital_period=self.period, duration=self.duration14,
             eccentricity=self.eccentricity, name=self.name)
 
+    # Find the next transit(s).
     def next_transit(self, jd_range):
         """
+        Method to look for transit events inside a Julian Date range.
 
         Args:
-            jd_range:
+
+            jd_range (array-like): The Julian Date interval where to look up
+                for transit events.
 
         Returns:
 
+            midtransit_times (``list``): List of Julian Dates of transit events.
         """
         jd_range = np.array(jd_range)
         jd0 = Time(jd_range[0], format='jd')
@@ -100,10 +137,16 @@ class Transit(object):
 # The light curve object
 class LightCurve(object):
     """
+    Light curve object, used to compute the light curves (duh!) of the
+    integrated flux inside a specific wavelength range or spectral line.
 
     Args:
-        visit (``Visit`` object):
-        transit (``Transit`` object):
+
+        visit (``sunburn.hst_observation.Visit`` object): HST visit object.
+
+        transit (``sunburn.analysis.Transit`` object): Exoplanet transit object.
+
+        line_list (``dict``, optional): Spectral line list.
     """
     def __init__(self, visit, transit, line_list=None):
         self.visit = visit
@@ -136,20 +179,31 @@ class LightCurve(object):
         if self.transit_midpoint is None:
             warnings.warn("No transit was found during this visit.")
 
-    # Compute the flux in a given wavelength range or for a line from the line
-    # list
+    # Compute the integrated flux
     def compute_flux(self, wavelength_range=None, transition=None,
                      line_index=None, wing=None):
         """
+        Compute the flux in a given wavelength range or for a line from the line
+        list.
 
         Args:
-            wavelength_range:
-            transition:
-            line_index:
-            wing:
 
-        Returns:
+            wavelength_range (array-like, optional): Lower and upper limits of
+                wavelengths where to compute the integrated flux, with shape
+                (2, ). If ``None``, than the transition and line index must be
+                provided. Default is ``None``.
 
+            transition (``str``, optional): Transition of the line to compute
+                the integrated flux. Example: ``'C II'``. If ``None``, than
+                the wavelength range must be provided. Default is ``None``.
+
+            line_index (``int``, optional): Index of the line to compute
+                the integrated flux. If ``None``, than the wavelength range must
+                be provided. Default is ``None``.
+
+            wing (``str``, optional): Choose to compute the integrated flux in
+                the blue or red wing of the line. Not implemented yet. Default
+                is ``None``.
         """
 
         # For each orbit in visit, compute the integrated flux
@@ -176,14 +230,25 @@ class LightCurve(object):
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
              label_choice='iso_date', fold=False):
         """
+        Plot the light curve. It is necessary to use
+        ``matplotlib.pyplot.plot()`` after running this method to visualize the
+        plot.
 
         Args:
-            figure_sizes:
-            axes_font_size:
-            label_choice:
+            figure_sizes (array-like, optional): Sizes of the x- and y-axes of
+                the plot. Default values are 9.0 for the x-axis and 6.5 for the
+                y-axis.
 
-        Returns:
+            axes_font_size (``int``, optional): Font size of the axes marks.
+                Default value is 18.
 
+            label_choice (``str``, optional): Choice of label to be used in the
+                light curve of the specified visit. Defaults to the ISO date
+                of the start of the first orbit.
+
+            fold (``bool``, optional): If ``True``, then fold the light curve
+                in the period of the exoplanet. Not implemented yet. Default is
+                ``False``.
         """
         pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
         pylab.rcParams['font.size'] = axes_font_size
