@@ -48,7 +48,7 @@ def pick_side(wavelength_array, wavelength_range):
             wavelength_range[1] < np.max(wavelength_array[1]):
         index = 1
     else:
-        raise ValueError('The requested wavelength range is not available'
+        raise ValueError('The requested wavelength range is not available '
                          'in this spectrum.')
 
     return index

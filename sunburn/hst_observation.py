@@ -82,6 +82,8 @@ class Visit(object):
                              self.orbit[i].flux[ind][min_wl:max_wl],
                              yerr=self.orbit[i].error[ind][min_wl:max_wl],
                              fmt='.', label=label)
+        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+        plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
         plt.legend(fontsize=legend_font_size)
         plt.show()
 
@@ -206,7 +208,8 @@ class COSSpectrum(UVSpectrum):
         return int_flux, uncertainty
 
     # Plot the spectrum
-    def plot_spectrum(self, wavelength_range, plot_uncertainties=False):
+    def plot_spectrum(self, wavelength_range=None, chip_index=None,
+                      plot_uncertainties=False):
         """
 
         Args:
@@ -216,24 +219,45 @@ class COSSpectrum(UVSpectrum):
         Returns:
 
         """
-        ind = tools.pick_side(self.wavelength, wavelength_range)
 
-        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
-        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+        if wavelength_range is not None:
+            ind = tools.pick_side(self.wavelength, wavelength_range)
+            min_wl = tools.nearest_index(self.wavelength[ind],
+                                         wavelength_range[0])
+            max_wl = tools.nearest_index(self.wavelength[ind],
+                                         wavelength_range[1])
 
-        # Finally plot it
-        if plot_uncertainties is False:
-            plt.plot(self.wavelength[ind][min_wl:max_wl],
-                     self.flux[ind][min_wl:max_wl],
-                     label=self.start_JD.value)
-        else:
-            plt.errorbar(self.wavelength[ind][min_wl:max_wl],
+            # Finally plot it
+            if plot_uncertainties is False:
+                plt.plot(self.wavelength[ind][min_wl:max_wl],
                          self.flux[ind][min_wl:max_wl],
-                         yerr=self.error[ind][min_wl:max_wl],
-                         fmt='.',
                          label=self.start_JD.value)
-        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
-        plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
+            else:
+                plt.errorbar(self.wavelength[ind][min_wl:max_wl],
+                             self.flux[ind][min_wl:max_wl],
+                             yerr=self.error[ind][min_wl:max_wl],
+                             fmt='.',
+                             label=self.start_JD.value)
+            plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+            plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
+
+        elif chip_index is not None:
+            if plot_uncertainties is False:
+                plt.plot(self.wavelength[chip_index],
+                         self.flux[chip_index],
+                         label=self.start_JD.value)
+            else:
+                plt.errorbar(self.wavelength[chip_index],
+                             self.flux[chip_index],
+                             yerr=self.error[chip_index],
+                             fmt='.',
+                             label=self.start_JD.value)
+            plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+            plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
+
+        else:
+            raise ValueError('Either the wavelength range or chip index must'
+                             'be provided.')
 
 
 # STIS spectrum class

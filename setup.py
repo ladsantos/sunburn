@@ -14,12 +14,12 @@ if sys.argv[-1] == "publish":
     sys.exit()
 
 setup(
-    name="blastoise",
+    name="sunburn",
     version="0.1a",
     author="Leonardo dos Santos",
     author_email="Leonardo.dosSantos@unige.ch",
-    packages=["blastoise"],
-    url="https://github.com/RogueAstro/blastoise",
+    packages=["sunburn"],
+    url="https://github.com/RogueAstro/sunburn",
     license="MIT",
     description="COS/HST data analysis",
     install_requires=[line.strip() for line in
