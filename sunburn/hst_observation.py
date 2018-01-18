@@ -27,8 +27,8 @@ class Visit(object):
 
     Args:
 
-        dataset_name (``str``): Name of the dataset, as downloaded from MAST.
-            For example, if the 1-d extracted spectrum file is named
+        dataset_name (``list``): List of names of the datasets, as downloaded
+            from MAST. For example, if the 1-d extracted spectrum file is named
             ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
 
         instrument (``str``): Instrument name. Currently, the only options
