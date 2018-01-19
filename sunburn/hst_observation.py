@@ -62,7 +62,7 @@ class Visit(object):
                      figure_sizes=(9.0, 6.5), axes_font_size=18,
                      legend_font_size=13):
         """
-        Method used to plot all the spectra in the visitexamples
+        Method used to plot all the spectra in the visit.
 
         Args:
 
