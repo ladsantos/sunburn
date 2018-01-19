@@ -19,7 +19,7 @@ setup(
     author="Leonardo dos Santos",
     author_email="Leonardo.dosSantos@unige.ch",
     packages=["sunburn"],
-    url="https://github.com/RogueAstro/sunburn",
+    url="https://github.com/ladsantos/sunburn",
     license="MIT",
     description="HST/UV spectra data analysis",
     install_requires=[line.strip() for line in
