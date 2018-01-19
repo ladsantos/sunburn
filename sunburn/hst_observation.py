@@ -184,41 +184,6 @@ class UVSpectrum(object):
                              self.data['NET'][1][i10:i11]])
         self.exp_time = self.data['EXPTIME'][0]
 
-
-# COS spectrum class
-class COSSpectrum(UVSpectrum):
-    """
-    HST/COS ultraviolet spectrum object, used as a container for the data
-    obtained in one HST/COS UV exposure.
-
-    Args:
-
-        dataset_name (``str``): Name of the dataset, as downloaded from MAST.
-            For example, if the 1-d extracted spectrum file is named
-            ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
-
-        good_pixel_limits (``tuple``, optional): Tuple containing the good pixel
-            limits of the detector, with shape (2, 2), where the first line is
-            the limits for the red chip, and the second line is for the blue
-            chip. If ``None``, use all pixels. Default is
-            ``((1260, 15170), (1025, 15020))``.
-    """
-    def __init__(self, dataset_name,
-                 good_pixel_limits=((1260, 15170), (1025, 15020))):
-        super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits)
-
-        # Instantiating useful global variables
-        self.sensitivity = None
-
-    # Compute the correct errors for the HST/COS observation
-    def compute_proper_error(self):
-        """
-        Compute the proper uncertainties of the HST/COS spectrum, following the
-        method proposed by Wilson+ 2017 (ADS code = 2017A&A...599A..75W).
-        """
-        self.sensitivity = self.flux / self.net / self.exp_time
-        self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
-
     # Compute the integrated flux in a given wavelength range
     # TODO: Offer the option to integrate between doppler shifts from line
     # center
@@ -345,7 +310,52 @@ class COSSpectrum(UVSpectrum):
                              'be provided.')
 
 
+# COS spectrum class
+class COSSpectrum(UVSpectrum):
+    """
+    HST/COS ultraviolet spectrum object, used as a container for the data
+    obtained in one HST/COS UV exposure.
+
+    Args:
+
+        dataset_name (``str``): Name of the dataset, as downloaded from MAST.
+            For example, if the 1-d extracted spectrum file is named
+            ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
+
+        good_pixel_limits (``tuple``, optional): Tuple containing the good pixel
+            limits of the detector, with shape (2, 2), where the first line is
+            the limits for the red chip, and the second line is for the blue
+            chip. If ``None``, use all pixels. Default is
+            ``((1260, 15170), (1025, 15020))``.
+    """
+    def __init__(self, dataset_name,
+                 good_pixel_limits=((1260, 15170), (1025, 15020))):
+        super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits)
+
+        # Instantiating useful global variables
+        self.sensitivity = None
+
+    # Compute the correct errors for the HST/COS observation
+    def compute_proper_error(self):
+        """
+        Compute the proper uncertainties of the HST/COS spectrum, following the
+        method proposed by Wilson+ 2017 (ADS code = 2017A&A...599A..75W).
+        """
+        self.sensitivity = self.flux / self.net / self.exp_time
+        self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
+
+
 # STIS spectrum class
-class STISSpectrum(object):
-    def __init__(self):
-        raise NotImplementedError('This feature is not implemented yet.')
+class STISSpectrum(UVSpectrum):
+    """
+    HST/STIS ultraviolet spectrum object, used as a container for the data
+    obtained in one HST/STIS UV exposure.
+
+    Args:
+
+        dataset_name (``str``): Name of the dataset, as downloaded from MAST.
+            For example, if the 1-d extracted spectrum file is named
+            ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
+    """
+    def __init__(self, dataset_name):
+        super(STISSpectrum, self).__init__(dataset_name)
