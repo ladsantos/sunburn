@@ -1,6 +1,8 @@
 # sunburn
 Data analysis of HST/COS far-UV targeted towards exoplanet transit spectroscopy.
 
+[Read the documentation here.](http://sunburn.readthedocs.io/)
+
 Dependencies
 ------------
 
