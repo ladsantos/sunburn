@@ -81,7 +81,9 @@ class Transit(object):
                 # to the online query
                 self.planet_properties = \
                     NasaExoplanetArchive.query_planet(
-                        self.name, table_path='../data/planets.csv')
+                        self.name, select_columns=('pl_hostname', 'sky_coord', 'pl_letter',
+                                                   'pl_orbper', 'pl_tranmid',
+                                                   'pl_trandur'))
                 self.period = self.planet_properties['pl_orbper']
                 self.transit_midpoint = \
                     Time(self.planet_properties['pl_tranmid'], format='jd')

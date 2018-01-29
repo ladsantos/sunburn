@@ -11,10 +11,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import astropy.units as u
+import os
 from astropy.io import fits
 from astropy.time import Time
 from . import tools
 from scipy.integrate import simps
+from costools import splittag, x1dcorr
 
 __all__ = ["Visit", "UVSpectrum", "COSSpectrum", "STISSpectrum"]
 
@@ -40,18 +42,15 @@ class Visit(object):
             chip. If ``None``, use all pixels. Default is ``None``.
     """
     def __init__(self, dataset_name, instrument, good_pixel_limits=None,
-                 data_folder=None):
+                 prefix=None):
 
         self.orbit = {}
 
         for i in range(len(dataset_name)):
             if instrument == 'cos':
-                if data_folder is None:
-                    path = dataset_name[i]
-                else:
-                    path = data_folder + dataset_name[i]
                 self.orbit[dataset_name[i]] = \
-                    COSSpectrum(path, good_pixel_limits)
+                    COSSpectrum(dataset_name[i], good_pixel_limits,
+                                prefix=prefix)
                 self.orbit[dataset_name[i]].compute_proper_error()
             elif instrument == 'stis':
                 raise NotImplementedError('STIS instrument not implemented '
@@ -134,10 +133,12 @@ class UVSpectrum(object):
             the units will be set to angstrom, erg/s/cm**2/angstrom and s for
             the wavelength, flux and exposure time. Default is ``None``.
     """
-    def __init__(self, dataset_name, good_pixel_limits=None, units=None):
+    def __init__(self, dataset_name, good_pixel_limits=None, units=None,
+                 prefix=None):
         self.dataset_name = dataset_name
         self.x1d = dataset_name + '_x1d.fits'
-        self.corrtag = dataset_name + '_corrtag_a.fits'
+        self.corrtag_a = dataset_name + '_corrtag_a.fits'
+        self.corrtag_b = dataset_name + '_corrtag_b.fits'
         self.gpl = good_pixel_limits
 
         if units is None:
@@ -147,13 +148,18 @@ class UVSpectrum(object):
         else:
             self.units = units
 
+        if prefix is None:
+            self.prefix = ""
+        else:
+            self.prefix = prefix
+
         # Read data from x1d file
-        with fits.open(self.x1d) as f:
+        with fits.open(self.prefix + self.x1d) as f:
             self.header = f[0].header
             self.data = f['SCI'].data
 
         # Read some metadata from the corrtag file
-        with fits.open(self.corrtag) as f:
+        with fits.open(self.prefix + self.corrtag_a) as f:
             self.start_JD = Time(f[3].header['EXPSTRTJ'], format='jd')
             self.end_JD = Time(f[3].header['EXPENDJ'], format='jd')
 
@@ -329,8 +335,9 @@ class COSSpectrum(UVSpectrum):
             ``((1260, 15170), (1025, 15020))``.
     """
     def __init__(self, dataset_name,
-                 good_pixel_limits=((1260, 15170), (1025, 15020))):
-        super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits)
+                 good_pixel_limits=((1260, 15170), (1025, 15020)), prefix=None):
+        super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits,
+                                          prefix=prefix)
 
         # Instantiating useful global variables
         self.sensitivity = None
@@ -343,6 +350,45 @@ class COSSpectrum(UVSpectrum):
         """
         self.sensitivity = self.flux / self.net / self.exp_time
         self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
+
+    # Time tag split the observation
+    def time_tag_split(self, time_bins, out_dir=""):
+        """
+
+        Args:
+            time_bins:
+            out_dir:
+
+        Returns:
+
+        """
+        # First check if out_dir exists; if not, create it
+        if os.path.isdir(out_dir) is False:
+            os.mkdir(out_dir)
+        else:
+            pass
+
+        # Create the time_list string from time_bins
+        time_list = ""
+        for time in time_bins:
+            time_list += str(time) + ', '
+
+        # Remove the last comma and space from the string
+        time_list = time_list[:-2]
+
+        # Add a forward slash to out_dir if it is not there
+        if out_dir[-1] != '/':
+            out_dir += '/'
+        else:
+            pass
+
+        # Finally split-tag the observation
+        splittag.splittag(
+            infiles=self.prefix + self.dataset_name + '_corrtag_a.fits',
+            outroot=out_dir + self.dataset_name + "_a", time_list=time_list)
+        splittag.splittag(
+            infiles=self.prefix + self.dataset_name + '_corrtag_b.fits',
+            outroot=out_dir + self.dataset_name + "_b", time_list=time_list)
 
 
 # STIS spectrum class
@@ -357,5 +403,6 @@ class STISSpectrum(UVSpectrum):
             For example, if the 1-d extracted spectrum file is named
             ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
     """
-    def __init__(self, dataset_name):
-        super(STISSpectrum, self).__init__(dataset_name)
+    def __init__(self, dataset_name, data_folder=None):
+        super(STISSpectrum, self).__init__(dataset_name,
+                                           data_folder=data_folder)
