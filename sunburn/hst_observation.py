@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import astropy.units as u
 import os
+import glob
 from astropy.io import fits
 from astropy.time import Time
 from . import tools
@@ -352,11 +353,14 @@ class COSSpectrum(UVSpectrum):
         self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
 
     # Time tag split the observation
-    def time_tag_split(self, time_bins, out_dir=""):
+    def time_tag_split(self, time_bins, path_calibration_files, out_dir=""):
         """
+        HST calibration files can be downloaded from here:
+        https://hst-crds.stsci.edu
 
         Args:
             time_bins:
+            path_calibration_files:
             out_dir:
 
         Returns:
@@ -382,13 +386,22 @@ class COSSpectrum(UVSpectrum):
         else:
             pass
 
-        # Finally split-tag the observation
+        # Split-tag the observation
         splittag.splittag(
             infiles=self.prefix + self.dataset_name + '_corrtag_a.fits',
-            outroot=out_dir + self.dataset_name + "_a", time_list=time_list)
+            outroot=out_dir + self.dataset_name, time_list=time_list)
         splittag.splittag(
             infiles=self.prefix + self.dataset_name + '_corrtag_b.fits',
-            outroot=out_dir + self.dataset_name + "_b", time_list=time_list)
+            outroot=out_dir + self.dataset_name, time_list=time_list)
+
+        # Set lref environment variable
+        if not 'lref' in os.environ:
+            os.environ['lref'] = path_calibration_files
+
+        # Extract the tag-split spectra
+        split_list = glob.glob(out_dir + '*_?_corrtag_?.fits')
+        for item in split_list:
+            x1dcorr.x1dcorr(input=item, outdir=out_dir)
 
 
 # STIS spectrum class
