@@ -353,7 +353,8 @@ class COSSpectrum(UVSpectrum):
         self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
 
     # Time tag split the observation
-    def time_tag_split(self, time_bins, path_calibration_files, out_dir=""):
+    def time_tag_split(self, time_bins, path_calibration_files, out_dir="",
+                       auto_extract=True, clean_intermediate_steps=True):
         """
         HST calibration files can be downloaded from here:
         https://hst-crds.stsci.edu
@@ -362,6 +363,8 @@ class COSSpectrum(UVSpectrum):
             time_bins:
             path_calibration_files:
             out_dir:
+            auto_extract:
+            clean_intermediate_steps:
 
         Returns:
 
@@ -394,14 +397,42 @@ class COSSpectrum(UVSpectrum):
             infiles=self.prefix + self.dataset_name + '_corrtag_b.fits',
             outroot=out_dir + self.dataset_name, time_list=time_list)
 
-        # Set lref environment variable
-        if not 'lref' in os.environ:
-            os.environ['lref'] = path_calibration_files
+        if auto_extract is True:
 
-        # Extract the tag-split spectra
-        split_list = glob.glob(out_dir + '*_?_corrtag_?.fits')
-        for item in split_list:
-            x1dcorr.x1dcorr(input=item, outdir=out_dir)
+            # Some hack necessary to avoid IO error when using x1dcorr
+            split_list = glob.glob(out_dir + '*_?_corrtag_?.fits')
+            print(split_list)
+            for item in split_list:
+                char_list = list(item)
+                char_list.insert(-13, char_list.pop(-6))
+                char_list.insert(-12, char_list.pop(-6))
+                link = ""
+                new_item = link.join(char_list)
+                os.rename(item, new_item)
+
+            # Set lref environment variable
+            if not 'lref' in os.environ:
+                os.environ['lref'] = path_calibration_files
+
+            # Extract the tag-split spectra
+            split_list = glob.glob(out_dir + '*_?_?_corrtag.fits')
+            for item in split_list:
+                x1dcorr.x1dcorr(input=item, outdir=out_dir)
+
+            # Clean the intermediate steps files
+            if clean_intermediate_steps is True:
+
+                remove_list = glob.glob(out_dir + '*_flt.fits')
+                for item in remove_list:
+                    os.remove(item)
+
+                remove_list = glob.glob(out_dir + '*_counts.fits')
+                for item in remove_list:
+                    os.remove(item)
+
+                remove_list = glob.glob(out_dir + '*_corrtag.fits')
+                for item in remove_list:
+                    os.remove(item)
 
 
 # STIS spectrum class
