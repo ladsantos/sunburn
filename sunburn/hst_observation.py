@@ -353,15 +353,17 @@ class COSSpectrum(UVSpectrum):
         self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
 
     # Time tag split the observation
-    def time_tag_split(self, time_bins, path_calibration_files, out_dir="",
+    def time_tag_split(self, path_calibration_files, n_splits=None,
+                       time_bins=None, out_dir="",
                        auto_extract=True, clean_intermediate_steps=True):
         """
         HST calibration files can be downloaded from here:
         https://hst-crds.stsci.edu
 
         Args:
-            time_bins:
             path_calibration_files:
+            time_bins:
+            n_splits:
             out_dir:
             auto_extract:
             clean_intermediate_steps:
@@ -375,19 +377,29 @@ class COSSpectrum(UVSpectrum):
         else:
             pass
 
-        # Create the time_list string from time_bins
-        time_list = ""
-        for time in time_bins:
-            time_list += str(time) + ', '
-
-        # Remove the last comma and space from the string
-        time_list = time_list[:-2]
-
-        # Add a forward slash to out_dir if it is not there
-        if out_dir[-1] != '/':
-            out_dir += '/'
+        # Create the time_list string from time_bins if the user specified them,
+        # or from the number of splits the user requested
+        if isinstance(n_splits, int):
+            time_bins = np.linspace(0, self.exp_time, n_splits + 1)
         else:
             pass
+
+        if time_bins is not None:
+            time_list = ""
+            for time in time_bins:
+                time_list += str(time) + ', '
+
+            # Remove the last comma and space from the string
+            time_list = time_list[:-2]
+
+            # Add a forward slash to out_dir if it is not there
+            if out_dir[-1] != '/':
+                out_dir += '/'
+            else:
+                pass
+        else:
+            raise ValueError('Either `time_bins` or `n_splits` have to be '
+                             'provided.')
 
         # Split-tag the observation
         splittag.splittag(
@@ -401,7 +413,6 @@ class COSSpectrum(UVSpectrum):
 
             # Some hack necessary to avoid IO error when using x1dcorr
             split_list = glob.glob(out_dir + '*_?_corrtag_?.fits')
-            print(split_list)
             for item in split_list:
                 char_list = list(item)
                 char_list.insert(-13, char_list.pop(-6))
