@@ -294,29 +294,56 @@ class LightCurve(object):
             label = str(label_choice)
 
         # Plot the integrated fluxes
-        plt.errorbar(self.time, self.integrated_flux, xerr=self.t_span,
-                     yerr=self.f_unc, fmt='o', label=label, color=symbol_color)
-        plt.xlabel('Julian date')
+        if fold is False:
+            plt.errorbar(self.time, self.integrated_flux, xerr=self.t_span,
+                         yerr=self.f_unc, fmt='o', label=label, color=symbol_color)
+            plt.xlabel('Julian date')
+        else:
+            plt.errorbar((self.time - self.transit_midpoint.value),
+                         self.integrated_flux, xerr=self.t_span,
+                         yerr=self.f_unc, fmt='o', label=label,
+                         color=symbol_color)
+            plt.xlabel('Time (d)')
         plt.ylabel(r'Integrated flux (erg s$^{-1}$ cm$^{-2}$)')
 
         # Plot the time-tag split data, if they are available
         if len(self.tt_integrated_flux) > 0 and plot_splits is True:
-            plt.errorbar(self.tt_time, self.tt_integrated_flux,
-                         xerr=self.tt_t_span, yerr=self.tt_f_unc, fmt='.',
-                         color=symbol_color, alpha=0.2)
+            if fold is False:
+                plt.errorbar(self.tt_time, self.tt_integrated_flux,
+                             xerr=self.tt_t_span, yerr=self.tt_f_unc, fmt='.',
+                             color=symbol_color, alpha=0.2)
+            else:
+                plt.errorbar((self.tt_time - self.transit_midpoint.value),
+                             self.tt_integrated_flux,
+                             xerr=self.tt_t_span, yerr=self.tt_f_unc, fmt='.',
+                             color=symbol_color, alpha=0.2)
 
         # Plot the transit times
         if self.transit_midpoint is not None:
-            for jd in self.transit_midpoint:
-                plt.axvline(x=jd.jd, ls='--', color='k')
-                plt.axvline(x=jd.jd - self.transit.duration14.to(u.d).value / 2,
+            if fold is False:
+                for jd in self.transit_midpoint:
+                    plt.axvline(x=jd.jd, ls='--', color='k')
+                    plt.axvline(x=jd.jd - self.transit.duration14.to(u.d).value / 2,
+                                color='r')
+                    plt.axvline(x=jd.jd + self.transit.duration14.to(u.d).value / 2,
+                                color='r')
+                    if self.transit.duration23 is not None:
+                        plt.axvline(
+                            x=jd.jd - self.transit.duration23.to(u.d).value / 2,
+                            ls='-.', color='r')
+                        plt.axvline(
+                            x=jd.jd + self.transit.duration23.to(u.d).value / 2,
+                            ls='-.', color='r')
+            else:
+                plt.axvline(x=0.0, ls='--', color='k')
+                plt.axvline(x=-self.transit.duration14.to(u.d).value / 2,
                             color='r')
-                plt.axvline(x=jd.jd + self.transit.duration14.to(u.d).value / 2,
+                plt.axvline(x=self.transit.duration14.to(u.d).value / 2,
                             color='r')
                 if self.transit.duration23 is not None:
                     plt.axvline(
-                        x=jd.jd - self.transit.duration23.to(u.d).value / 2,
+                        x=-self.transit.duration23.to(u.d).value / 2,
                         ls='-.', color='r')
                     plt.axvline(
-                        x=jd.jd + self.transit.duration23.to(u.d).value / 2,
+                        x=self.transit.duration23.to(u.d).value / 2,
                         ls='-.', color='r')
