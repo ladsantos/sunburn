@@ -18,6 +18,7 @@ from astropy.time import Time
 from . import tools
 from scipy.integrate import simps
 from costools import splittag, x1dcorr
+from calcos.x1d import concatenateSegments
 
 __all__ = ["Visit", "UVSpectrum", "COSSpectrum", "STISSpectrum"]
 
@@ -342,6 +343,7 @@ class COSSpectrum(UVSpectrum):
 
         # Instantiating useful global variables
         self.sensitivity = None
+        self.split = None
 
     # Compute the correct errors for the HST/COS observation
     def compute_proper_error(self):
@@ -401,6 +403,8 @@ class COSSpectrum(UVSpectrum):
             raise ValueError('Either `time_bins` or `n_splits` have to be '
                              'provided.')
 
+        out_dir = self.prefix + out_dir
+
         # Split-tag the observation
         splittag.splittag(
             infiles=self.prefix + self.dataset_name + '_corrtag_a.fits',
@@ -441,9 +445,42 @@ class COSSpectrum(UVSpectrum):
                 for item in remove_list:
                     os.remove(item)
 
-                remove_list = glob.glob(out_dir + '*_corrtag.fits')
+            # Return the filenames back to normal
+            split_list = glob.glob(out_dir + '*_corrtag.fits')
+            for item in split_list:
+                char_list = list(item)
+                char_list.insert(-5, char_list.pop(-15))
+                char_list.insert(-5, char_list.pop(-15))
+                link = ""
+                new_item = link.join(char_list)
+                os.rename(item, new_item)
+            split_list = glob.glob(out_dir + '*_x1d.fits')
+            for item in split_list:
+                char_list = list(item)
+                char_list.insert(-5, char_list.pop(-9))
+                char_list.insert(-5, char_list.pop(-10))
+                link = ""
+                new_item = link.join(char_list)
+                os.rename(item, new_item)
+
+            # Concatenate segments `a` and `b` of the detector
+            for i in range(n_splits):
+                x1d_list = glob.glob(out_dir + '*_%i_x1d_?.fits' % (i + 1))
+                concatenateSegments(x1d_list, out_dir + self.dataset_name +
+                                    '_%i' % (i + 1) + '_x1d.fits')
+
+            # Remove more intermediate steps
+            if clean_intermediate_steps is True:
+                remove_list = glob.glob(out_dir + '*_?_x1d_?.fits')
                 for item in remove_list:
                     os.remove(item)
+
+            # Finally add each tag-split observation to the `self.split` object
+            self.split = []
+            for i in range(n_splits):
+                dataset_name = self.dataset_name + '_%i' % (i + 1)
+                split_obs = COSSpectrum(dataset_name, prefix=out_dir)
+                self.split.append(split_obs)
 
 
 # STIS spectrum class
