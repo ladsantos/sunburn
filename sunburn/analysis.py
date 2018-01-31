@@ -159,6 +159,12 @@ class LightCurve(object):
         self.t_span = []
         self.f_unc = []
 
+        # Instantiate variables for tag-split data
+        self.tt_integrated_flux = []
+        self.tt_time = []
+        self.tt_t_span = []
+        self.tt_f_unc = []
+
         # Reading time information
         jd_start = []
         jd_end = []
@@ -168,6 +174,16 @@ class LightCurve(object):
             self.t_span.append((orbit.end_JD.jd - orbit.start_JD.jd) / 2)
             jd_start.append(orbit.start_JD)
             jd_end.append(orbit.end_JD)
+
+            # If time-tag split data are available, compute information from
+            # them
+            if orbit.split is not None:
+                n_splits = len(orbit.split)
+                for i in range(n_splits):
+                    self.tt_time.append((orbit.split[i].start_JD.jd +
+                                         orbit.split[i].end_JD.jd) / 2)
+                    self.tt_t_span.append((orbit.split[i].start_JD.jd -
+                                           orbit.split[i].end_JD.jd) / 2)
 
         # Figure out the range of julian dates spanned by the visit
         jd_start = np.array(jd_start)
@@ -226,9 +242,20 @@ class LightCurve(object):
             self.integrated_flux.append(int_f)
             self.f_unc.append(unc)
 
+            # In addition, for each split, compute the integrate flux, if there
+            # are time-tag split data available
+            if orbit.split is not None:
+                n_splits = len(orbit.split)
+                for i in range(n_splits):
+                    int_f, unc = orbit.split[i].integrated_flux(
+                        wavelength_range)
+                    self.tt_integrated_flux.append(int_f)
+                    self.tt_f_unc.append(unc)
+
     # Plot the light curve
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
-             label_choice='iso_date', fold=False):
+             label_choice='iso_date', symbol_color=None, fold=False,
+             plot_splits=True):
         """
         Plot the light curve. It is necessary to use
         ``matplotlib.pyplot.plot()`` after running this method to visualize the
@@ -247,8 +274,11 @@ class LightCurve(object):
                 of the start of the first orbit.
 
             fold (``bool``, optional): If ``True``, then fold the light curve
-                in the period of the exoplanet. Not implemented yet. Default is
+                in the period of the exoplanet. Default is
                 ``False``.
+
+            plot_splits (``bool``, optional): If available, plot the
+                split-tagged data in addition. Default value is ``True``.
         """
         pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
         pylab.rcParams['font.size'] = axes_font_size
@@ -265,9 +295,15 @@ class LightCurve(object):
 
         # Plot the integrated fluxes
         plt.errorbar(self.time, self.integrated_flux, xerr=self.t_span,
-                     yerr=self.f_unc, fmt='o', label=label)
+                     yerr=self.f_unc, fmt='o', label=label, color=symbol_color)
         plt.xlabel('Julian date')
         plt.ylabel(r'Integrated flux (erg s$^{-1}$ cm$^{-2}$)')
+
+        # Plot the time-tag split data, if they are available
+        if len(self.tt_integrated_flux) > 0 and plot_splits is True:
+            plt.errorbar(self.tt_time, self.tt_integrated_flux,
+                         xerr=self.tt_t_span, yerr=self.tt_f_unc, fmt='.',
+                         color=symbol_color, alpha=0.2)
 
         # Plot the transit times
         if self.transit_midpoint is not None:

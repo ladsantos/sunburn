@@ -47,6 +47,8 @@ class Visit(object):
                  prefix=None):
 
         self.orbit = {}
+        self.split = {}
+        self.instrument = instrument
 
         for i in range(len(dataset_name)):
             if instrument == 'cos':
@@ -110,6 +112,48 @@ class Visit(object):
         plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
         plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
         plt.legend(fontsize=legend_font_size)
+
+    # Time-tag split the observations in the visit
+    def time_tag_split(self, n_splits, path_calibration_files, out_dir):
+        """
+
+        Args:
+            n_splits:
+            path_calibration_files:
+            out_dir:
+
+        Returns:
+
+        """
+        if self.instrument != 'cos':
+            raise ValueError('Time-tag splitting is only available for COS.')
+        else:
+            pass
+
+        for dataset in self.orbit:
+            self.orbit[dataset].time_tag_split(
+                n_splits, out_dir=out_dir,
+                path_calibration_files=path_calibration_files)
+            for i in range(n_splits):
+                self.orbit[dataset].split[i].compute_proper_error()
+
+    # Assign previously computed splits to the visit
+    def assign_splits(self, path):
+        """
+
+        Args:
+            path:
+        """
+        if self.instrument != 'cos':
+            raise ValueError('Time-tag splitting is only available for COS.')
+        else:
+            pass
+
+        for dataset in self.orbit:
+            self.orbit[dataset].assign_splits(path)
+            n_splits = len(self.orbit[dataset].split)
+            for i in range(n_splits):
+                self.orbit[dataset].split[i].compute_proper_error()
 
 
 # The general ultraviolet spectrum object
@@ -355,19 +399,19 @@ class COSSpectrum(UVSpectrum):
         self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
 
     # Time tag split the observation
-    def time_tag_split(self, path_calibration_files, n_splits=None,
-                       time_bins=None, out_dir="",
-                       auto_extract=True, clean_intermediate_steps=True):
+    def time_tag_split(self, n_splits=None, time_bins=None, out_dir="",
+                       auto_extract=True, path_calibration_files=None,
+                       clean_intermediate_steps=True):
         """
         HST calibration files can be downloaded from here:
         https://hst-crds.stsci.edu
 
         Args:
-            path_calibration_files:
             time_bins:
             n_splits:
             out_dir:
             auto_extract:
+            path_calibration_files:
             clean_intermediate_steps:
 
         Returns:
@@ -415,8 +459,12 @@ class COSSpectrum(UVSpectrum):
 
         if auto_extract is True:
 
+            assert isinstance(path_calibration_files, str), \
+                'Calibration files path must be provided.'
+
             # Some hack necessary to avoid IO error when using x1dcorr
-            split_list = glob.glob(out_dir + '*_?_corrtag_?.fits')
+            split_list = glob.glob(out_dir + self.dataset_name +
+                                   '_?_corrtag_?.fits')
             for item in split_list:
                 char_list = list(item)
                 char_list.insert(-13, char_list.pop(-6))
@@ -430,23 +478,27 @@ class COSSpectrum(UVSpectrum):
                 os.environ['lref'] = path_calibration_files
 
             # Extract the tag-split spectra
-            split_list = glob.glob(out_dir + '*_?_?_corrtag.fits')
+            split_list = glob.glob(out_dir + self.dataset_name +
+                                   '_?_?_corrtag.fits')
             for item in split_list:
                 x1dcorr.x1dcorr(input=item, outdir=out_dir)
 
             # Clean the intermediate steps files
             if clean_intermediate_steps is True:
 
-                remove_list = glob.glob(out_dir + '*_flt.fits')
+                remove_list = glob.glob(out_dir + self.dataset_name +
+                                        '*_flt.fits')
                 for item in remove_list:
                     os.remove(item)
 
-                remove_list = glob.glob(out_dir + '*_counts.fits')
+                remove_list = glob.glob(out_dir + self.dataset_name +
+                                        '*_counts.fits')
                 for item in remove_list:
                     os.remove(item)
 
             # Return the filenames back to normal
-            split_list = glob.glob(out_dir + '*_corrtag.fits')
+            split_list = glob.glob(out_dir + self.dataset_name +
+                                   '*_corrtag.fits')
             for item in split_list:
                 char_list = list(item)
                 char_list.insert(-5, char_list.pop(-15))
@@ -454,7 +506,7 @@ class COSSpectrum(UVSpectrum):
                 link = ""
                 new_item = link.join(char_list)
                 os.rename(item, new_item)
-            split_list = glob.glob(out_dir + '*_x1d.fits')
+            split_list = glob.glob(out_dir + self.dataset_name + '*_x1d.fits')
             for item in split_list:
                 char_list = list(item)
                 char_list.insert(-5, char_list.pop(-9))
@@ -465,22 +517,73 @@ class COSSpectrum(UVSpectrum):
 
             # Concatenate segments `a` and `b` of the detector
             for i in range(n_splits):
-                x1d_list = glob.glob(out_dir + '*_%i_x1d_?.fits' % (i + 1))
+                x1d_list = glob.glob(out_dir + self.dataset_name +
+                                     '_%i_x1d_?.fits' % (i + 1))
                 concatenateSegments(x1d_list, out_dir + self.dataset_name +
                                     '_%i' % (i + 1) + '_x1d.fits')
 
             # Remove more intermediate steps
             if clean_intermediate_steps is True:
-                remove_list = glob.glob(out_dir + '*_?_x1d_?.fits')
+                remove_list = glob.glob(out_dir + self.dataset_name +
+                                        '_?_x1d_?.fits')
                 for item in remove_list:
                     os.remove(item)
 
             # Finally add each tag-split observation to the `self.split` object
             self.split = []
+            time_step = ((self.exp_time / n_splits) * u.s).to(u.d)
             for i in range(n_splits):
                 dataset_name = self.dataset_name + '_%i' % (i + 1)
                 split_obs = COSSpectrum(dataset_name, prefix=out_dir)
+                # Correct the start and end Julian Dates of the split data
+                split_obs.start_JD += i * time_step
+                split_obs.end_JD -= time_step * (n_splits - i - 1)
                 self.split.append(split_obs)
+
+    def assign_splits(self, path):
+        """
+        If time-tag splits were computed previously, you should use this method
+        to assign the resulting split data to a ``COSSpeectrum`` object.
+
+        Args:
+            path:
+        """
+        # Add a trailing forward slash to path if it is not there
+        if path[-1] != '/':
+            path = path + '/'
+        else:
+            pass
+
+        # Find the number of splits
+        split_list = glob.glob(path + self.dataset_name + '_?_x1d.fits')
+        n_splits = len(split_list)
+
+        # Add each tag-split observation to the `self.split` object
+        self.split = []
+        time_step = ((self.exp_time / n_splits) * u.s).to(u.d)
+        for i in range(n_splits):
+            dataset_name = self.dataset_name + '_%i' % (i + 1)
+            split_obs = COSSpectrum(dataset_name, prefix=path)
+            split_obs.start_JD += i * time_step
+            split_obs.end_JD -= time_step * (n_splits - i - 1)
+            self.split.append(split_obs)
+
+    # Plot the time-tag split spectra
+    def plot_splits(self, wavelength_range=None, chip_index=None,
+                    plot_uncertainties=False):
+        """
+
+        Args:
+            wavelength_range:
+            chip_index:
+            plot_uncertainties:
+
+        Returns:
+
+        """
+        for i in range(len(self.split)):
+            self.split[i].plot_spectrum(wavelength_range, chip_index,
+                                        plot_uncertainties)
 
 
 # STIS spectrum class
