@@ -61,9 +61,9 @@ class Visit(object):
                                           'yet.')
 
     # Plot all the spectra in a wavelength range
-    def plot_spectra(self, wavelength_range, uncertainties=False,
-                     figure_sizes=(9.0, 6.5), axes_font_size=18,
-                     legend_font_size=13):
+    def plot_spectra(self, wavelength_range=None, chip_index=None,
+                     uncertainties=False, figure_sizes=(9.0, 6.5),
+                     axes_font_size=18, legend_font_size=13, rotate_x_ticks=30):
         """
         Method used to plot all the spectra in the visit.
 
@@ -71,6 +71,8 @@ class Visit(object):
 
             wavelength_range (array-like): Wavelength limits to be plotted,
                 with shape (2, ).
+
+            chip_index():
 
             uncertainties (``bool``, optional): If ``True``, then plot the
                 spectra with their respective uncertainties. Default is
@@ -92,6 +94,19 @@ class Visit(object):
         for i in self.orbit:
             # Use the start time of observation as label
             label = self.orbit[i].start_JD.iso
+
+            # Use either the wavelength range or the chip_index
+            if wavelength_range is None:
+                k = chip_index
+                try:
+                    wavelength_range = [min(self.orbit[i].wavelength[k]) + 1,
+                                        max(self.orbit[i].wavelength[k]) - 1]
+                except TypeError:
+                    raise ValueError('Either the wavelength range or the chip'
+                                     'index have to be provided.')
+            else:
+                pass
+
             # Find which side of the chip corresponds to the wavelength range
             ind = tools.pick_side(self.orbit[i].wavelength, wavelength_range)
             # Now find which spectrum indexes correspond to the requested
@@ -112,6 +127,9 @@ class Visit(object):
         plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
         plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
         plt.legend(fontsize=legend_font_size)
+        if rotate_x_ticks is not None:
+            plt.xticks(rotation=rotate_x_ticks)
+            plt.tight_layout()
 
     # Time-tag split the observations in the visit
     def time_tag_split(self, n_splits, path_calibration_files, out_dir):
@@ -295,7 +313,7 @@ class UVSpectrum(object):
 
     # Plot the spectrum
     def plot_spectrum(self, wavelength_range=None, chip_index=None,
-                      plot_uncertainties=False):
+                      plot_uncertainties=False, rotate_x_ticks=30):
         """
         Plot the spectrum, with the option of selecting a specific wavelength
         range or the red or blue chips of the detector. In order to visualize
@@ -316,6 +334,8 @@ class UVSpectrum(object):
             plot_uncertainties (``bool``, optional): If set to ``True``, than
                 the spectrum is plotted with uncertainty bars. Default is
                 ``False``.
+
+            rotate_x_ticks ():
         """
 
         if wavelength_range is not None:
@@ -360,6 +380,10 @@ class UVSpectrum(object):
         else:
             raise ValueError('Either the wavelength range or chip index must'
                              'be provided.')
+
+        if rotate_x_ticks is not None:
+            plt.xticks(rotation=rotate_x_ticks)
+            plt.tight_layout()
 
 
 # COS spectrum class
