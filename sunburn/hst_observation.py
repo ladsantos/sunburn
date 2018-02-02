@@ -385,6 +385,19 @@ class UVSpectrum(object):
             plt.xticks(rotation=rotate_x_ticks)
             plt.tight_layout()
 
+    # Apply wavelength shift
+    def wavelength_shift(self, delta_lambda=None, delta_v=None):
+        """
+
+        Args:
+            delta_lambda:
+            delta_v:
+
+        Returns:
+
+        """
+        raise NotImplementedError()
+
 
 # COS spectrum class
 class COSSpectrum(UVSpectrum):
@@ -412,6 +425,7 @@ class COSSpectrum(UVSpectrum):
         # Instantiating useful global variables
         self.sensitivity = None
         self.split = None
+        self._systematics = None
 
     # Compute the correct errors for the HST/COS observation
     def compute_proper_error(self):
@@ -608,6 +622,137 @@ class COSSpectrum(UVSpectrum):
         for i in range(len(self.split)):
             self.split[i].plot_spectrum(wavelength_range, chip_index,
                                         plot_uncertainties)
+
+    def verify_systematic(self, line_list, plot=True):
+        """
+
+        Args:
+            line_list:
+
+            plot (``bool``, optional)
+
+        Returns:
+            norm (``float``): Mean of the sum of integrated fluxes of the lines
+                in the list over the time-tag split data. It is useful to set
+                the baseline level of flux to be applied in systematics
+                correction.
+        """
+        self._systematics = {}
+
+        if self.split is None:
+            raise ValueError('Can only compute systematics when time-tag '
+                             'split data are available.')
+        else:
+            pass
+
+        flux = []
+        f_unc = []
+
+        # For each species in the line list
+        for species in line_list:
+            n_lines = len(line_list[species])
+            # For each spectral line of a species
+            for i in range(n_lines):
+                wl_range = line_list[species][i].wavelength_range
+                # For each split in the observation
+                for split in self.split:
+                    f, unc = split.integrated_flux(wavelength_range=wl_range)
+                    flux.append(f)
+                    f_unc.append(unc)
+
+        # Compute times of the observation (this is a repetition of code, should
+        # be automated at some point.
+        n_splits = len(self.split)
+        time = []
+        t_span = []
+        for i in range(n_splits):
+            time.append((self.split[i].start_JD.jd +
+                         self.split[i].end_JD.jd) / 2)
+            t_span.append((self.split[i].start_JD.jd -
+                           self.split[i].end_JD.jd) / 2)
+        time = np.array(time)
+        t_span = np.array(t_span)
+        self._systematics['time'] = time
+
+        # Compute sum of integrated fluxes
+        n_lines = len(flux) // n_splits
+        flux = np.reshape(np.array(flux), (n_lines, n_splits))
+        f_unc = np.reshape(np.array(f_unc), (n_lines, n_splits))
+        total_flux = flux.sum(axis=0)
+        self._systematics['flux'] = total_flux
+        total_unc = ((f_unc ** 2).sum(axis=0)) ** 0.5
+
+        # Plot the computed fluxes
+        if plot is True:
+            x_shift = (self.end_JD.jd + self.start_JD.jd) / 2
+            norm = np.mean(total_flux)
+            t_hour = ((time - x_shift) * u.d).to(u.h).value
+            plt.errorbar(t_hour, total_flux / norm,
+                         xerr=(t_span * u.d).to(u.h).value,
+                         yerr=total_unc / norm, fmt='o')
+            plt.xlabel('Time (h)')
+            plt.ylabel('Normalized sum of integrated fluxes')
+        else:
+            norm = np.mean(total_flux)
+
+        return norm
+
+    # Systematic correction using a polynomial
+    def correct_systematic(self, line_list, baseline_level, poly_deg=1,
+                           temp_jd_shift=2.45E6, recompute_errors=False):
+        """
+        Correct the systematics of a HST/COS orbit by fitting a polynomial to
+        the sum of the integrated fluxes of various spectral lines (these lines
+        should preferably not have a transiting signal) for a series of time-tag
+        split data.
+
+        Args:
+
+            line_list (`COSFUVLineList` object):
+
+            baseline_level ():
+
+            poly_deg (``int``, optional): Degree of the polynomial to be fit.
+                Default value is 1.
+
+            temp_jd_shift (``float``, optional): In order to perform a proper
+                fit, it is necessary to temporarily modify the Julian Date to a
+                smaller number, which is done by subtracting the value of this
+                variable from the Julian Dates. Default value is 2.45E6.
+        """
+        if self._systematics is None:
+            temp_norm = self.verify_systematic(line_list, plot=False)
+
+        # Now fit a polynomial
+        time = self._systematics['time']
+        total_flux = self._systematics['flux']
+        norm = baseline_level
+        n_splits = len(self.split)
+        mod_jd = time - temp_jd_shift
+        coeff = np.polyfit(mod_jd, total_flux / norm, deg=poly_deg)
+        func = np.poly1d(coeff)
+        corr_factor = func(mod_jd)  # Array of correction factors
+
+        # Now we change the spectral flux in each split of this ``COSSpectrum``
+        # to take into account the systematics
+        for i in range(n_splits):
+            self.split[i].flux[0] /= corr_factor[i]
+            self.split[i].flux[1] /= corr_factor[i]
+            if recompute_errors is True:
+                self.split[i].compute_proper_error()
+
+        # Now correct the spectral flux of the ``COSSpectrum`` itself. The flux
+        # will be given by the mean of the flux of all splits and the
+        # uncertainties by the quadratic sum of those of the splits
+        for k in range(2):
+            sum_split_flux = []
+            for split in self.split:
+                sum_split_flux.append(split.flux[k])
+            sum_split_flux = np.array(sum_split_flux)
+            mean_flux = sum_split_flux.sum(axis=0) / n_splits
+            self.flux[k] = mean_flux
+            if recompute_errors is True:
+                self.compute_proper_error()
 
 
 # STIS spectrum class

@@ -148,22 +148,22 @@ class LightCurve(object):
 
         line_list (``dict``, optional): Spectral line list.
     """
-    def __init__(self, visit, transit, line_list=None):
+    def __init__(self, visit, transit=None, line_list=None):
         self.visit = visit
         self.transit = transit
         self.line_list = line_list
 
         # Instantiating useful global variables
-        self.integrated_flux = []
+        self.integrated_flux = None
         self.time = []
         self.t_span = []
-        self.f_unc = []
+        self.f_unc = None
 
         # Instantiate variables for tag-split data
-        self.tt_integrated_flux = []
+        self.tt_integrated_flux = None
         self.tt_time = []
         self.tt_t_span = []
-        self.tt_f_unc = []
+        self.tt_f_unc = None
 
         # Reading time information
         jd_start = []
@@ -190,10 +190,17 @@ class LightCurve(object):
         jd_end = np.array(jd_end)
         self.jd_range = (np.min(jd_start), np.max(jd_end))
 
+        # Transform lists into numpy arrays
+        self.time = np.array(self.time)
+        self.t_span = np.array(self.t_span)
+        self.tt_time = np.array(self.tt_time)
+        self.tt_t_span = np.array(self.tt_t_span)
+
         # Now look if there is a transit happening during the visit
-        self.transit_midpoint = self.transit.next_transit(self.jd_range)
-        if self.transit_midpoint is None:
-            warnings.warn("No transit was found during this visit.")
+        if self.transit is not None:
+            self.transit_midpoint = self.transit.next_transit(self.jd_range)
+            if self.transit_midpoint is None:
+                warnings.warn("No transit was found during this visit.")
 
     # Compute the integrated flux
     def compute_flux(self, wavelength_range=None, transition=None,
@@ -221,6 +228,10 @@ class LightCurve(object):
                 the blue or red wing of the line. Not implemented yet. Default
                 is ``None``.
         """
+        self.integrated_flux = []
+        self.f_unc = []
+        self.tt_integrated_flux = []
+        self.tt_f_unc = []
 
         # For each orbit in visit, compute the integrated flux
         if wavelength_range is None:
@@ -252,10 +263,16 @@ class LightCurve(object):
                     self.tt_integrated_flux.append(int_f)
                     self.tt_f_unc.append(unc)
 
+        # Transform the lists into numpy arrays
+        self.integrated_flux = np.array(self.integrated_flux)
+        self.f_unc = np.array(self.f_unc)
+        self.tt_integrated_flux = np.array(self.tt_integrated_flux)
+        self.tt_f_unc = np.array(self.tt_f_unc)
+
     # Plot the light curve
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
              label_choice='iso_date', symbol_color=None, fold=False,
-             plot_splits=True):
+             plot_splits=True, norm_factor=None):
         """
         Plot the light curve. It is necessary to use
         ``matplotlib.pyplot.plot()`` after running this method to visualize the
@@ -273,12 +290,19 @@ class LightCurve(object):
                 light curve of the specified visit. Defaults to the ISO date
                 of the start of the first orbit.
 
+            symbol_color (``str``, optional):
+
             fold (``bool``, optional): If ``True``, then fold the light curve
                 in the period of the exoplanet. Default is
                 ``False``.
 
             plot_splits (``bool``, optional): If available, plot the
                 split-tagged data in addition. Default value is ``True``.
+
+            norm_factor (``float`` or ``astropy.Quantity``, optional):
+                Normalization factor to apply to light curve. If ``float``, then
+                assume the unit of the factor is erg / s / (cm ** 2). If
+                ``None``, then do not normalize. Default is ``None``.
         """
         pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
         pylab.rcParams['font.size'] = axes_font_size
@@ -293,40 +317,64 @@ class LightCurve(object):
         else:
             label = str(label_choice)
 
+        if isinstance(norm_factor, u.Quantity):
+            norm = norm_factor.to(u.erg / u.s / u.cm ** 2).value
+        elif isinstance(norm_factor, float):
+            norm = norm_factor
+        else:
+            norm = 1.0
+
         # Plot the integrated fluxes
         if fold is False:
-            plt.errorbar(self.time, self.integrated_flux, xerr=self.t_span,
-                         yerr=self.f_unc, fmt='o', label=label, color=symbol_color)
+            plt.errorbar(self.time, self.integrated_flux / norm,
+                         xerr=self.t_span, yerr=self.f_unc / norm, fmt='o',
+                         label=label, color=symbol_color)
             plt.xlabel('Julian date')
         else:
-            plt.errorbar((self.time - self.transit_midpoint.value),
-                         self.integrated_flux, xerr=self.t_span,
-                         yerr=self.f_unc, fmt='o', label=label,
+            time_mod = \
+                ((self.time - self.transit_midpoint.value) * u.d).to(u.h).value
+            t_span_mod = (self.t_span * u.d).to(u.h).value
+            plt.errorbar(time_mod,
+                         self.integrated_flux / norm, xerr=t_span_mod,
+                         yerr=self.f_unc / norm, fmt='o', label=label,
                          color=symbol_color)
-            plt.xlabel('Time (d)')
-        plt.ylabel(r'Integrated flux (erg s$^{-1}$ cm$^{-2}$)')
+            plt.xlabel('Time (h)')
+
+        if norm_factor is None:
+            plt.ylabel(r'Integrated flux (erg s$^{-1}$ cm$^{-2}$)')
+        else:
+            plt.ylabel(r'Normalized integrated flux')
 
         # Plot the time-tag split data, if they are available
         if len(self.tt_integrated_flux) > 0 and plot_splits is True:
             if fold is False:
-                plt.errorbar(self.tt_time, self.tt_integrated_flux,
-                             xerr=self.tt_t_span, yerr=self.tt_f_unc, fmt='.',
-                             color=symbol_color, alpha=0.2)
+                plt.errorbar(self.tt_time, self.tt_integrated_flux / norm,
+                             xerr=self.tt_t_span, yerr=self.tt_f_unc / norm,
+                             fmt='.', color=symbol_color, alpha=0.2)
             else:
-                plt.errorbar((self.tt_time - self.transit_midpoint.value),
-                             self.tt_integrated_flux,
-                             xerr=self.tt_t_span, yerr=self.tt_f_unc, fmt='.',
-                             color=symbol_color, alpha=0.2)
+                # TODO: For now this only works if there's only one transit
+                # per visit. Implement a solution for when there's more than
+                # one transit event.
+                time_mod = \
+                    ((self.tt_time - self.transit_midpoint.value) * u.d).to(
+                        u.h).value
+                t_span_mod = (self.tt_t_span * u.d).to(u.h).value
+                plt.errorbar(time_mod,
+                             self.tt_integrated_flux / norm,
+                             xerr=t_span_mod, yerr=self.tt_f_unc / norm,
+                             fmt='.', color=symbol_color, alpha=0.2)
 
         # Plot the transit times
-        if self.transit_midpoint is not None:
+        if self.transit is not None and self.transit_midpoint is not None:
             if fold is False:
                 for jd in self.transit_midpoint:
                     plt.axvline(x=jd.jd, ls='--', color='k')
-                    plt.axvline(x=jd.jd - self.transit.duration14.to(u.d).value / 2,
-                                color='r')
-                    plt.axvline(x=jd.jd + self.transit.duration14.to(u.d).value / 2,
-                                color='r')
+                    plt.axvline(
+                        x=jd.jd - self.transit.duration14.to(u.d).value / 2,
+                        color='r')
+                    plt.axvline(
+                        x=jd.jd + self.transit.duration14.to(u.d).value / 2,
+                        color='r')
                     if self.transit.duration23 is not None:
                         plt.axvline(
                             x=jd.jd - self.transit.duration23.to(u.d).value / 2,
@@ -336,14 +384,18 @@ class LightCurve(object):
                             ls='-.', color='r')
             else:
                 plt.axvline(x=0.0, ls='--', color='k')
-                plt.axvline(x=-self.transit.duration14.to(u.d).value / 2,
+                plt.axvline(x=-self.transit.duration14.to(u.h).value / 2,
                             color='r')
-                plt.axvline(x=self.transit.duration14.to(u.d).value / 2,
+                plt.axvline(x=self.transit.duration14.to(u.h).value / 2,
                             color='r')
                 if self.transit.duration23 is not None:
                     plt.axvline(
-                        x=-self.transit.duration23.to(u.d).value / 2,
+                        x=-self.transit.duration23.to(u.h).value / 2,
                         ls='-.', color='r')
                     plt.axvline(
-                        x=self.transit.duration23.to(u.d).value / 2,
+                        x=self.transit.duration23.to(u.h).value / 2,
                         ls='-.', color='r')
+
+    # Plot light curve of the splits of a single orbit
+    def plot_single_orbit(self):
+        pass
