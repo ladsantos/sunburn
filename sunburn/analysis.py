@@ -202,9 +202,34 @@ class LightCurve(object):
             if self.transit_midpoint is None:
                 warnings.warn("No transit was found during this visit.")
 
+    # Systematic correction using a polynomial
+    def correct_systematic(self, reference_line_list, baseline_level,
+                           poly_deg=1, temp_jd_shift=2.45E6):
+        """
+        Correct the systematics of a HST/COS orbit by fitting a polynomial to
+        the sum of the integrated fluxes of various spectral lines (these lines
+        should preferably not have a transiting signal) for a series of time-tag
+        split data.
+
+        Args:
+
+            reference_line_list (`COSFUVLineList` object):
+
+            baseline_level ():
+
+            poly_deg (``int``, optional): Degree of the polynomial to be fit.
+                Default value is 1.
+
+            temp_jd_shift (``float``, optional): In order to perform a proper
+                fit, it is necessary to temporarily modify the Julian Date to a
+                smaller number, which is done by subtracting the value of this
+                variable from the Julian Dates. Default value is 2.45E6.
+        """
+        pass
+
     # Compute the integrated flux
     def compute_flux(self, wavelength_range=None, transition=None,
-                     line_index=None, wing=None):
+                     line_index=None, wing=None, correct_systematic=None):
         """
         Compute the flux in a given wavelength range or for a line from the line
         list.
@@ -232,42 +257,98 @@ class LightCurve(object):
         self.f_unc = []
         self.tt_integrated_flux = []
         self.tt_f_unc = []
+        n_orbits = len(self.visit.orbit)
 
-        # For each orbit in visit, compute the integrated flux
+        # The local function to perform flux integration
+        def _integrate(wl_range):
+            """
+
+            Args:
+                wl_range:
+
+            Returns:
+
+            """
+            # For each orbit in visit, compute the integrated flux
+            for o in self.visit.orbit:
+                orbit = self.visit.orbit[o]
+                int_f, unc = orbit.integrated_flux(wl_range)
+                self.integrated_flux.append(int_f)
+                self.f_unc.append(unc)
+
+                # In addition, for each split, compute the integrate flux, if
+                # there are time-tag split data available
+                if orbit.split is not None:
+                    n_splits = len(orbit.split)
+                    for i in range(n_splits):
+                        int_f, unc = orbit.split[i].integrated_flux(
+                            wl_range)
+                        self.tt_integrated_flux.append(int_f)
+                        self.tt_f_unc.append(unc)
+
+        # Figure out the wavelength ranges
         if wavelength_range is None:
             assert isinstance(self.line_list, dict), 'Either a wavelength ' \
-                                                     'range or the line list ' \
+                                                     'range or a transition ' \
                                                      'has to be provided.'
-            wavelength_range = \
-                self.line_list[transition][line_index].wavelength_range
-            if wing == 'blue':
-                wavelength_range[1] = \
-                    self.line_list[transition][line_index].central_wavelength
-            if wing == 'red':
-                wavelength_range[0] = \
-                    self.line_list[transition][line_index].central_wavelength
 
-        for i in self.visit.orbit:
-            orbit = self.visit.orbit[i]
-            int_f, unc = orbit.integrated_flux(wavelength_range)
-            self.integrated_flux.append(int_f)
-            self.f_unc.append(unc)
+            # If the line_index us just a scalar, only one wavelength range will
+            # be used
+            if isinstance(line_index, int):
+                n_lines = 1
+                # Find the wavelength range
+                wavelength_range = \
+                    self.line_list[transition][line_index].wavelength_range
+                if wing == 'blue':
+                    wavelength_range[1] = \
+                        self.line_list[transition][line_index].central_wavelength
+                if wing == 'red':
+                    wavelength_range[0] = \
+                        self.line_list[transition][line_index].central_wavelength
+                # Compute the integrated flux for the line
+                _integrate(wavelength_range)
 
-            # In addition, for each split, compute the integrate flux, if there
-            # are time-tag split data available
-            if orbit.split is not None:
-                n_splits = len(orbit.split)
-                for i in range(n_splits):
-                    int_f, unc = orbit.split[i].integrated_flux(
-                        wavelength_range)
-                    self.tt_integrated_flux.append(int_f)
-                    self.tt_f_unc.append(unc)
+            # If more than one line is requested, then the integrated fluxes
+            # will be co-added line by line
+            elif isinstance(line_index, list):
+                n_lines = len(line_index)
+                for k in line_index:
+                    # Find the wavelength range for the line
+                    wavelength_range = \
+                        self.line_list[transition][k].wavelength_range
+                    if wing == 'blue':
+                        wavelength_range[1] = \
+                            self.line_list[transition][k].central_wavelength
+                    if wing == 'red':
+                        wavelength_range[0] = \
+                            self.line_list[transition][k].central_wavelength
+                    # Compute the integrated flux for the line
+                    _integrate(wavelength_range)
+
+            else:
+                raise ValueError('`line_index` must be `int` or `list`.')
+
+        else:
+            n_lines = 1
+            _integrate(wavelength_range)
 
         # Transform the lists into numpy arrays
         self.integrated_flux = np.array(self.integrated_flux)
         self.f_unc = np.array(self.f_unc)
         self.tt_integrated_flux = np.array(self.tt_integrated_flux)
         self.tt_f_unc = np.array(self.tt_f_unc)
+
+        # Co-add the integrated line fluxes if more than one was requested
+        if n_lines > 1:
+            temp = self.integrated_flux.reshape((n_lines, n_orbits))
+            self.integrated_flux = np.sum(temp, axis=0)
+            temp = self.f_unc.reshape((n_lines, n_orbits))
+            self.f_unc = np.sqrt(np.sum(temp ** 2, axis=0))
+            temp = self.tt_integrated_flux.reshape(
+                (n_lines, len(self.tt_integrated_flux) // n_lines))
+            self.tt_integrated_flux = np.sum(temp, axis=0)
+            temp = self.tt_f_unc.reshape((n_lines, len(self.tt_f_unc) // n_lines))
+            self.tt_f_unc = np.sqrt(np.sum(temp ** 2, axis=0))
 
     # Plot the light curve
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,

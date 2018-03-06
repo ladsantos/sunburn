@@ -11,11 +11,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import astropy.units as u
+import astropy.constants as c
 import os
 import glob
 from astropy.io import fits
 from astropy.time import Time
-from . import tools
+from . import tools, spectroscopy
 from scipy.integrate import simps
 from costools import splittag, x1dcorr
 from calcos.x1d import concatenateSegments
@@ -397,6 +398,55 @@ class UVSpectrum(object):
 
         """
         raise NotImplementedError()
+
+    # Plot specific spectral lines
+    def plot_lines(self, line, plot_uncertainties=False, rotate_x_ticks=30,
+                   coadd=False):
+        """
+
+        Args:
+            line (`Line` object or list): A `Line` object or a list containing
+                the lines to be plotted.
+
+            plot_uncertainties (``bool``, optional): If set to ``True``, than
+                the spectrum is plotted with uncertainty bars. Default is
+                ``False``.
+
+            rotate_x_ticks (`bool`, optional): Angle to rotate the ticks in the
+                x-axis. Default value is 30 degrees.
+
+            coadd (`bool`, optional): Co-add the lines before plotting. Default
+                is False.
+
+        Returns:
+
+        """
+        # Find the Doppler velocities from line center
+        light_speed = c.c.to(u.km / u.s).value
+        if isinstance(line, spectroscopy.Line):
+            ind = tools.pick_side(self.wavelength, line.wavelength_range)
+            min_wl = tools.nearest_index(self.wavelength[ind],
+                                         line.wavelength_range[0])
+            max_wl = tools.nearest_index(self.wavelength[ind],
+                                         line.wavelength_range[1])
+            doppler_v = \
+                (self.wavelength[ind][min_wl:max_wl] - line.central_wavelength)\
+                / line.central_wavelength * light_speed
+            flux = self.flux[ind][min_wl:max_wl]
+            unc = self.error[ind][min_wl:max_wl]
+            print(doppler_v)
+
+        elif isinstance(line, list):
+            pass
+
+        # Finally plot it
+        if plot_uncertainties is False:
+            plt.plot(doppler_v, flux, label=self.start_JD.value)
+        else:
+            plt.errorbar(doppler_v, flux, yerr=unc, fmt='.',
+                         label=self.start_JD.value)
+        plt.xlabel(r'Velocity (km s$^{-1}$)')
+        plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
 
 
 # COS spectrum class
