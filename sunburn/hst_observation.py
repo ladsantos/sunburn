@@ -50,6 +50,11 @@ class Visit(object):
         self.orbit = {}
         self.split = {}
         self.instrument = instrument
+        self.coadd_flux = None
+        self.coadd_f_unc = None
+        self.coadd_time = None
+        self.coadd_t_span = None
+        self.n_orbit = len(dataset_name)
 
         for i in range(len(dataset_name)):
             if instrument == 'cos':
@@ -131,6 +136,37 @@ class Visit(object):
         if rotate_x_ticks is not None:
             plt.xticks(rotation=rotate_x_ticks)
             plt.tight_layout()
+
+    # Co-add spectra in a visit
+    def coadd_spectra(self):
+        """
+
+        Returns:
+        """
+
+        self.coadd_flux = 0
+        self.coadd_f_unc = 0
+        #self.coadd_time = 0
+        #self.coadd_t_span = 0
+        for orbit in self.orbit:
+            self.coadd_flux += self.orbit[orbit].flux
+            self.coadd_f_unc += self.orbit[orbit].error ** 2
+            #self.coadd_time.append(
+            #    (self.orbit[orbit].start_JD.value +
+            #     self.orbit[orbit].end_JD.value) / 2)
+            #self.coadd_t_span.append(
+            #    (self.orbit[orbit].end_JD - self.orbit[orbit].start_JD) / 2)
+        self.coadd_flux /= self.n_orbit
+        self.coadd_f_unc = np.sqrt(self.coadd_f_unc) / self.n_orbit
+        #self.coadd_time = np.array(self.coadd_time)
+
+        # Perform the co-addition
+        #self.coadd_flux = np.mean(self.coadd_flux, axis=0)
+        #self.coadd_f_unc = (np.sum(self.coadd_f_unc ** 2, axis=0)) ** 0.5 / \
+        #    self.n_orbit
+        #self.coadd_time = np.mean(self.coadd_time, axis=0)
+        #self.coadd_time = Time(self.coadd_time, format='jd')
+
 
     # Time-tag split the observations in the visit
     def time_tag_split(self, n_splits, path_calibration_files, out_dir):
@@ -820,3 +856,106 @@ class STISSpectrum(UVSpectrum):
     def __init__(self, dataset_name, data_folder=None):
         super(STISSpectrum, self).__init__(dataset_name,
                                            data_folder=data_folder)
+
+
+# The combined visit class
+class CombinedSpectra(object):
+    """
+
+    """
+    def __init__(self, visit):
+        self._orbits = []
+        self._n_orbit = len(visit.orbit)
+        self.flux = 0
+        self.f_unc = 0
+        self.start_JD = []
+        self.end_JD = []
+
+        for o in visit.orbit:
+            self._orbits.append(visit.orbit[o])
+            self.flux += visit.orbit[o].flux
+            self.f_unc += visit.orbit[o].error ** 2
+            self.start_JD.append(visit.orbit[o].start_JD)
+            self.end_JD.append(visit.orbit[o].end_JD)
+
+        self.wavelength = visit.orbit[o].wavelength
+        self.flux /= self._n_orbit
+        self.f_unc = self.f_unc ** 0.5 / self._n_orbit
+
+    # Plot the combined spectrum
+    def plot_spectrum(self, wavelength_range=None, chip_index=None,
+                      uncertainties=False, figure_sizes=(9.0, 6.5),
+                      axes_font_size=18, legend_font_size=13, rotate_x_ticks=30,
+                      label=None):
+        """
+
+        Args:
+            wavelength_range:
+            chip_index:
+            uncertainties:
+            figure_sizes:
+            axes_font_size:
+            legend_font_size:
+            rotate_x_ticks:
+            label:
+
+        Returns:
+
+        """
+        pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
+        pylab.rcParams['font.size'] = axes_font_size
+
+        # Figure out the wavelength range
+        if wavelength_range is None:
+            k = chip_index
+            try:
+                wavelength_range = [min(self.wavelength[k]) + 1,
+                                    max(self.wavelength[k]) - 1]
+            except TypeError:
+                raise ValueError('Either the wavelength range or the chip'
+                                 'index have to be provided.')
+        else:
+            pass
+
+        # Find which side of the chip corresponds to the wavelength range
+        ind = tools.pick_side(self.wavelength, wavelength_range)
+        # Now find which spectrum indexes correspond to the requested
+        # wavelength
+        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
+        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+        if uncertainties is False:
+            plt.plot(self.wavelength[ind][min_wl:max_wl],
+                     self.flux[ind][min_wl:max_wl], label=label)
+        else:
+            plt.errorbar(self.wavelength[ind][min_wl:max_wl],
+                         self.flux[ind][min_wl:max_wl],
+                         yerr=self.f_unc[ind][min_wl:max_wl], fmt='.',
+                         label=label)
+        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+        plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
+        plt.legend(fontsize=legend_font_size)
+        if rotate_x_ticks is not None:
+            plt.xticks(rotation=rotate_x_ticks)
+            plt.tight_layout()
+
+    # Compute the integrated flux of the spectrum in a given wavelength range
+    def integrate_flux(self, wavelength_range):
+        """
+
+        Args:
+            wavelength_range:
+
+        Returns:
+
+        """
+        ind = tools.pick_side(self.wavelength, wavelength_range)
+
+        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
+        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+        # The following line is hacky, but it works
+        delta_wl = self.wavelength[ind][1:] - self.wavelength[ind][:-1]
+        int_flux = simps(self.flux[ind][min_wl:max_wl],
+                         x=self.wavelength[ind][min_wl:max_wl])
+        uncertainty = np.sqrt(np.sum((delta_wl[min_wl:max_wl] *
+                                      self.f_unc[ind][min_wl:max_wl]) ** 2))
+        return int_flux, uncertainty
