@@ -157,12 +157,14 @@ class LightCurve(object):
         self.integrated_flux = None
         self.time = []
         self.t_span = []
+        self.phase = []
         self.f_unc = None
 
         # Instantiate variables for tag-split data
         self.tt_integrated_flux = None
-        self.tt_time = []
-        self.tt_t_span = []
+        self.tt_time = None
+        self.tt_phase = None
+        self.tt_t_span = None
         self.tt_f_unc = None
 
         # Reading time information
@@ -178,12 +180,17 @@ class LightCurve(object):
             # If time-tag split data are available, compute information from
             # them
             if orbit.split is not None:
+                if self.tt_time is None or self.tt_t_span is None:
+                    self.tt_time = []
+                    self.tt_t_span = []
+                else:
+                    pass
                 n_splits = len(orbit.split)
-                for i in range(n_splits):
-                    self.tt_time.append((orbit.split[i].start_JD.jd +
-                                         orbit.split[i].end_JD.jd) / 2)
-                    self.tt_t_span.append((orbit.split[i].start_JD.jd -
-                                           orbit.split[i].end_JD.jd) / 2)
+                for j in range(n_splits):
+                    self.tt_time.append((orbit.split[j].start_JD.jd +
+                                         orbit.split[j].end_JD.jd) / 2)
+                    self.tt_t_span.append((orbit.split[j].start_JD.jd -
+                                           orbit.split[j].end_JD.jd) / 2)
 
         # Figure out the range of julian dates spanned by the visit
         jd_start = np.array(jd_start)
@@ -193,14 +200,25 @@ class LightCurve(object):
         # Transform lists into numpy arrays
         self.time = np.array(self.time)
         self.t_span = np.array(self.t_span)
-        self.tt_time = np.array(self.tt_time)
-        self.tt_t_span = np.array(self.tt_t_span)
+        if self.tt_time is not None or self.tt_t_span is not None:
+            self.tt_time = np.array(self.tt_time)
+            self.tt_t_span = np.array(self.tt_t_span)
+        else:
+            pass
 
         # Now look if there is a transit happening during the visit
         if self.transit is not None:
             self.transit_midpoint = self.transit.next_transit(self.jd_range)
             if self.transit_midpoint is None:
                 warnings.warn("No transit was found during this visit.")
+
+        # Compute the phases in relation to transit midpoint
+        if self.transit is not None and self.transit_midpoint is not None:
+            self.phase = ((self.time - self.transit_midpoint.value) *
+                          u.d).to(u.h).value
+            if self.tt_time is not None:
+                self.tt_phase = ((self.tt_time - self.transit_midpoint.value) *
+                                 u.d).to(u.h).value
 
     # Systematic correction using a polynomial
     def correct_systematic(self, reference_line_list, baseline_level,
@@ -353,7 +371,7 @@ class LightCurve(object):
     # Plot the light curve
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
              label_choice='iso_date', symbol_color=None, fold=False,
-             plot_splits=True, norm_factor=None):
+             plot_splits=True, norm_factor=None, bars=False):
         """
         Plot the light curve. It is necessary to use
         ``matplotlib.pyplot.plot()`` after running this method to visualize the
@@ -477,6 +495,84 @@ class LightCurve(object):
                         x=self.transit.duration23.to(u.h).value / 2,
                         ls='-.', color='r')
 
-    # Plot light curve of the splits of a single orbit
-    def plot_single_orbit(self):
-        pass
+
+# The co-added light curve object
+class CombinedLightCurve(object):
+    """
+
+    """
+    def __init__(self, light_curves, phase_bins, norm_factors=None):
+        self.n_lc = len(light_curves)
+        self.phase_bins = phase_bins
+        self.n_p = len(phase_bins) - 1
+        self.norm = norm_factors
+        self.transit = light_curves[0].transit
+
+        self.integrated_flux = np.zeros(self.n_p)
+        self.f_unc = np.zeros(self.n_p)
+        self._counts = np.zeros(self.n_p)
+        self.phase = np.zeros(self.n_p)
+
+        # For each light curve...
+        for lc in light_curves:
+            # For each orbit in the light curve...
+            for i in range(len(lc.integrated_flux)):
+                # Find if the current flux is inside the phase bin
+                for j in range(self.n_p):
+                    if phase_bins[j] < lc.phase[i] < phase_bins[j + 1]:
+                        # If so, co-add it
+                        self.integrated_flux[j] += lc.integrated_flux[i]
+                        self.f_unc[j] += lc.f_unc[i] ** 2
+                        self.phase[j] += lc.phase[i]
+                        self._counts[j] += 1
+                    else:
+                        pass
+
+        # Finally divide by number of counts in each bin
+        self.integrated_flux /= self._counts
+        self.f_unc = self.f_unc ** 0.5 / self._counts
+        self.phase /= self._counts
+
+    # Plot the combined light curve
+    def plot(self, norm=1, figure_sizes=(9.0, 6.5), axes_font_size=18,
+             label='', symbol=None, symbol_color=None, symbol_size=None):
+        """
+
+        Args:
+            norm:
+            figure_sizes:
+            axes_font_size:
+
+        Returns:
+
+        """
+        pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
+        pylab.rcParams['font.size'] = axes_font_size
+
+        if symbol is None:
+            symbol = 'o'
+
+        plt.errorbar(self.phase, self.integrated_flux / norm,
+                     yerr=self.f_unc / norm, fmt=symbol, label=label,
+                     color=symbol_color, markersize=symbol_size)
+
+        # Plot the transit lines
+        plt.axvline(x=0.0, ls='--', color='k')
+        plt.axvline(x=-self.transit.duration14.to(u.h).value / 2,
+                    color='r')
+        plt.axvline(x=self.transit.duration14.to(u.h).value / 2,
+                    color='r')
+        if self.transit.duration23 is not None:
+            plt.axvline(
+                x=-self.transit.duration23.to(u.h).value / 2,
+                ls='-.', color='r')
+            plt.axvline(
+                x=self.transit.duration23.to(u.h).value / 2,
+                ls='-.', color='r')
+
+        # Plot axes labels
+        if norm == 1:
+            plt.ylabel(r'Integrated flux (erg s$^{-1}$ cm$^{-2}$)')
+        else:
+            plt.ylabel(r'Normalized integrated flux')
+        plt.xlabel('Time (h)')
