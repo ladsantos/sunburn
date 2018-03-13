@@ -371,7 +371,7 @@ class LightCurve(object):
     # Plot the light curve
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
              label_choice='iso_date', symbol_color=None, fold=False,
-             plot_splits=True, norm_factor=None, bars=False):
+             plot_splits=True, norm_factor=None):
         """
         Plot the light curve. It is necessary to use
         ``matplotlib.pyplot.plot()`` after running this method to visualize the
