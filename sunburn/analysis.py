@@ -9,6 +9,7 @@ from __future__ import (division, print_function, absolute_import,
 
 import numpy as np
 import astropy.units as u
+import astropy.constants as c
 import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import warnings

@@ -14,10 +14,12 @@ import astropy.units as u
 import astropy.constants as c
 import os
 import glob
+
 from astropy.io import fits
 from astropy.time import Time
 from . import tools, spectroscopy
 from scipy.integrate import simps
+from scipy.signal import correlate
 from costools import splittag, x1dcorr
 from calcos.x1d import concatenateSegments
 
@@ -512,6 +514,7 @@ class COSSpectrum(UVSpectrum):
         self.sensitivity = None
         self.split = None
         self._systematics = None
+        self.ccf = None
 
     # Compute the correct errors for the HST/COS observation
     def compute_proper_error(self):
@@ -886,7 +889,8 @@ class CombinedSpectra(object):
     def plot_spectrum(self, wavelength_range=None, chip_index=None,
                       uncertainties=False, figure_sizes=(9.0, 6.5),
                       axes_font_size=18, legend_font_size=13, rotate_x_ticks=30,
-                      label=None):
+                      label=None, barplot=False, velocity_space=False,
+                      line_center=None, **kwargs):
         """
 
         Args:
@@ -898,6 +902,9 @@ class CombinedSpectra(object):
             legend_font_size:
             rotate_x_ticks:
             label:
+            barplot:
+            velocity_space:
+            line_center:
 
         Returns:
 
@@ -923,15 +930,36 @@ class CombinedSpectra(object):
         # wavelength
         min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
         max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
-        if uncertainties is False:
-            plt.plot(self.wavelength[ind][min_wl:max_wl],
-                     self.flux[ind][min_wl:max_wl], label=label)
+
+        # Figure out the x- and y-axes values
+        if velocity_space is False:
+            x_values = self.wavelength[ind][min_wl:max_wl]
+            x_label = r'Wavelength ($\mathrm{\AA}$)'
         else:
-            plt.errorbar(self.wavelength[ind][min_wl:max_wl],
-                         self.flux[ind][min_wl:max_wl],
-                         yerr=self.f_unc[ind][min_wl:max_wl], fmt='.',
-                         label=label)
-        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+            ls = c.c.to(u.km / u.s).value
+            x_values = (self.wavelength[ind][min_wl:max_wl] - line_center) / \
+                line_center * ls
+            x_label = r'Velocity (km s$^{-1}$)'
+        delta_x = x_values[1] - x_values[0]
+        y_values = self.flux[ind][min_wl:max_wl]
+        y_err = self.f_unc[ind][min_wl:max_wl]
+
+        # Finally plot it
+        if uncertainties is False:
+            if barplot is False:
+                plt.plot(x_values, y_values, label=label, **kwargs)
+            else:
+                plt.bar(x_values, y_values, label=label, width=delta_x,
+                        **kwargs)
+        else:
+            if barplot is False:
+                plt.errorbar(x_values, y_values, yerr=y_err, fmt='.',
+                             label=label, **kwargs)
+            else:
+                plt.bar(x_values, y_values, yerr=y_err, label=label,
+                        width=delta_x, **kwargs)
+
+        plt.xlabel(x_label)
         plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
         plt.legend(fontsize=legend_font_size)
         if rotate_x_ticks is not None:

@@ -5,6 +5,8 @@ Various general tools used by the code.
 """
 
 import numpy as np
+import astropy.units as u
+from scipy.signal import correlate
 
 
 def nearest_index(array, target_value):
@@ -52,3 +54,64 @@ def pick_side(wavelength_array, wavelength_range):
                          'in this spectrum.')
 
     return index
+
+
+def make_bins(array):
+    """
+    Transform an array (e.g., wavelengths) into a bin-array (bins of
+    wavelengths, useful to make a barplot).
+
+    Args:
+        array:
+
+    Returns:
+
+    """
+    bin_array = (array[:-1] + array[1:]) / 2
+    spacing = bin_array[1] - bin_array[0]
+    bin_array -= spacing
+    bin_array = np.append(bin_array, bin_array[-1] + spacing)
+    bin_array = np.append(bin_array, bin_array[-1] + spacing)
+    return bin_array
+
+
+def cross_correlate(line, spectrum, wavelength_span=1 * u.angstrom,
+                    mask_width_factor=5):
+    """
+    Computes the cross-correlation function of the spectrum in with a
+    square-function mask.
+
+    Args:
+        line (`spectroscopy.Line`):
+        spectrum (`hst_observation.UVSpectrum`):
+        wavelength_span:
+        mask_width_factor:
+
+    Returns:
+
+    """
+    if isinstance(wavelength_span, u.Quantity):
+        wavelength_span = wavelength_span.to(u.angstrom).value
+    else:
+        pass
+
+    def square(x, x0, width):
+        if (x0 - width / 2) < x <= (x0 + width / 2):
+            y = 1 / width
+        else:
+            y = 0
+        return y
+
+    w0 = line.central_wavelength
+    wl_width = (line.wavelength_range[1] -line.wavelength_range[0]) / 2
+    dw = wavelength_span / 2
+
+    # Find the interval where to compute the ccf
+    ind = pick_side(spectrum.wavelength, [w0 - dw, w0 + dw])
+    min_wl = nearest_index(spectrum.wavelength[ind], w0 - dw)
+    max_wl = nearest_index(spectrum.wavelength[ind], w0 + dw)
+    mask = np.array([square(xk, w0, wl_width / mask_width_factor)
+                     for xk in spectrum.wavelength[ind][min_wl:max_wl]])
+
+    ccf = correlate(spectrum.flux[ind][min_wl:max_wl], mask, mode='same')
+    return spectrum.wavelength[ind][min_wl:max_wl], ccf
