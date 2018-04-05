@@ -19,7 +19,6 @@ from astropy.io import fits
 from astropy.time import Time
 from . import tools, spectroscopy
 from scipy.integrate import simps
-from scipy.signal import correlate
 from costools import splittag, x1dcorr
 from calcos.x1d import concatenateSegments
 

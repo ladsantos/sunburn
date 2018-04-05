@@ -6,7 +6,9 @@ Various general tools used by the code.
 
 import numpy as np
 import astropy.units as u
+import astropy.constants as c
 from scipy.signal import correlate
+from scipy.optimize import curve_fit
 
 
 def nearest_index(array, target_value):
@@ -114,4 +116,44 @@ def cross_correlate(line, spectrum, wavelength_span=1 * u.angstrom,
                      for xk in spectrum.wavelength[ind][min_wl:max_wl]])
 
     ccf = correlate(spectrum.flux[ind][min_wl:max_wl], mask, mode='same')
-    return spectrum.wavelength[ind][min_wl:max_wl], ccf
+    d_shift = (spectrum.wavelength[ind][min_wl:max_wl] - w0) / w0 * \
+        c.c.to(u.km / u.s).value
+
+    # Setting the initial guesses to fit a Gaussian to the CCF
+    mult_factor = 1E14
+    ds_0 = 0
+    fwhm_0 = wl_width / w0 * c.c.to(u.km / u.s).value
+    ampl_0 = np.max(ccf) * mult_factor
+    coeff = fit_gaussian(d_shift, ccf * mult_factor, ds_0, fwhm_0, ampl_0)
+    return d_shift, ccf, coeff
+
+
+def fit_gaussian(x, y, x_0, fwhm_0, amplitude_0):
+    """
+    Fit a Gaussian to the (x, y) curve, using as a first guess the values of the
+    Gaussian center `x_0`, the `fwhm_0` and `amplitude_0`.
+
+    Args:
+        x:
+        y:
+        x_0:
+        fwhm_0:
+        amplitude_0:
+
+    Returns:
+        x_f:
+        fwhm_f:
+        amplitude_f:
+
+    """
+    # The function that defines a Gaussian
+    def gaussian(xs, *p):
+        mu, sigma, ampl = p
+        return ampl * np.exp(-(xs - mu) ** 2 / (2 * sigma ** 2))
+
+    # The initial guess
+    p0 = [x_0, fwhm_0, amplitude_0]
+
+    # Perform the fit
+    coeff, var = curve_fit(gaussian, x, y, p0=p0)
+    return coeff

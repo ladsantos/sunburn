@@ -247,8 +247,9 @@ class LightCurve(object):
         pass
 
     # Compute the integrated flux
-    def compute_flux(self, wavelength_range=None, transition=None,
-                     line_index=None, wing=None, correct_systematic=None):
+    def compute_flux(self, velocity_range=None, transition=None,
+                     line_index=None, doppler_shift_corr=0.0,
+                     wavelength_range=None):
         """
         Compute the flux in a given wavelength range or for a line from the line
         list.
@@ -267,16 +268,13 @@ class LightCurve(object):
             line_index (``int``, optional): Index of the line to compute
                 the integrated flux. If ``None``, than the wavelength range must
                 be provided. Default is ``None``.
-
-            wing (``str``, optional): Choose to compute the integrated flux in
-                the blue or red wing of the line. Not implemented yet. Default
-                is ``None``.
         """
         self.integrated_flux = []
         self.f_unc = []
         self.tt_integrated_flux = []
         self.tt_f_unc = []
         n_orbits = len(self.visit.orbit)
+        light_speed = c.c.to(u.km / u.s).value
 
         # The local function to perform flux integration
         def _integrate(wl_range):
@@ -289,6 +287,7 @@ class LightCurve(object):
 
             """
             # For each orbit in visit, compute the integrated flux
+            i = 0
             for o in self.visit.orbit:
                 orbit = self.visit.orbit[o]
                 int_f, unc = orbit.integrated_flux(wl_range)
@@ -304,9 +303,15 @@ class LightCurve(object):
                             wl_range)
                         self.tt_integrated_flux.append(int_f)
                         self.tt_f_unc.append(unc)
+                i += 1
 
-        # Figure out the wavelength ranges
-        if wavelength_range is None:
+        # If the wavelength range is provided, just straight out compute the LC
+        if wavelength_range is not None:
+            n_lines = 1
+            _integrate(wavelength_range)
+        # If not, then the wavelength range has to be figured out from the given
+        # transition, Doppler shift correction and velocity range
+        else:
             assert isinstance(self.line_list, dict), 'Either a wavelength ' \
                                                      'range or a transition ' \
                                                      'has to be provided.'
@@ -316,40 +321,38 @@ class LightCurve(object):
             if isinstance(line_index, int):
                 n_lines = 1
                 # Find the wavelength range
-                wavelength_range = \
-                    self.line_list[transition][line_index].wavelength_range
-                if wing == 'blue':
-                    wavelength_range[1] = \
-                        self.line_list[transition][line_index].central_wavelength
-                if wing == 'red':
-                    wavelength_range[0] = \
-                        self.line_list[transition][line_index].central_wavelength
+                central_wl = \
+                    self.line_list[transition][line_index].central_wavelength
+                ds_range = np.array(velocity_range) + doppler_shift_corr
+                wavelength_range = ds_range / light_speed * central_wl + \
+                    central_wl
                 # Compute the integrated flux for the line
+                print(wavelength_range)
                 _integrate(wavelength_range)
 
             # If more than one line is requested, then the integrated fluxes
             # will be co-added line by line
             elif isinstance(line_index, list):
                 n_lines = len(line_index)
+                count = 0
                 for k in line_index:
                     # Find the wavelength range for the line
-                    wavelength_range = \
-                        self.line_list[transition][k].wavelength_range
-                    if wing == 'blue':
-                        wavelength_range[1] = \
-                            self.line_list[transition][k].central_wavelength
-                    if wing == 'red':
-                        wavelength_range[0] = \
-                            self.line_list[transition][k].central_wavelength
+                    central_wl = \
+                        self.line_list[transition][k].central_wavelength
+                    try:
+                        ds_range = np.array(velocity_range) + \
+                            doppler_shift_corr[count]
+                    except TypeError:
+                        ds_range = np.array(velocity_range) + doppler_shift_corr
+                    wavelength_range = ds_range / light_speed * central_wl + \
+                        central_wl
                     # Compute the integrated flux for the line
+                    print(wavelength_range)
                     _integrate(wavelength_range)
+                    count += 1
 
             else:
                 raise ValueError('`line_index` must be `int` or `list`.')
-
-        else:
-            n_lines = 1
-            _integrate(wavelength_range)
 
         # Transform the lists into numpy arrays
         self.integrated_flux = np.array(self.integrated_flux)
