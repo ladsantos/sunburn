@@ -68,7 +68,7 @@ class Visit(object):
                                           'yet.')
 
     # Plot all the spectra in a wavelength range
-    def plot_spectra(self, wavelength_range=None, chip_index=None,
+    def plot_spectra(self, wavelength_range=None, chip_index=None, ref_wl=None,
                      uncertainties=False, figure_sizes=(9.0, 6.5),
                      axes_font_size=18, legend_font_size=13, rotate_x_ticks=30):
         """
@@ -80,6 +80,9 @@ class Visit(object):
                 with shape (2, ).
 
             chip_index():
+
+            ref_wl (``float``, optional): Reference wavelength used to plot the
+                spectra in Doppler velocity space.
 
             uncertainties (``bool``, optional): If ``True``, then plot the
                 spectra with their respective uncertainties. Default is
@@ -122,16 +125,24 @@ class Visit(object):
                                          wavelength_range[0])
             max_wl = tools.nearest_index(self.orbit[i].wavelength[ind],
                                          wavelength_range[1])
+
+            if isinstance(ref_wl, float):
+                x_axis = \
+                    (self.orbit[i].wavelength[ind][min_wl:max_wl] - ref_wl) / \
+                    ref_wl * c.c.to(u.km / u.s).value
+                x_label = r'Velocity (km s$^{-1}$)'
+            else:
+                x_axis = self.orbit[i].wavelength[ind][min_wl:max_wl]
+                x_label = r'Wavelength ($\mathrm{\AA}$)'
+
             if uncertainties is False:
-                plt.plot(self.orbit[i].wavelength[ind][min_wl:max_wl],
-                         self.orbit[i].flux[ind][min_wl:max_wl],
+                plt.plot(x_axis, self.orbit[i].flux[ind][min_wl:max_wl],
                          label=label)
             else:
-                plt.errorbar(self.orbit[i].wavelength[ind][min_wl:max_wl],
-                             self.orbit[i].flux[ind][min_wl:max_wl],
+                plt.errorbar(x_axis, self.orbit[i].flux[ind][min_wl:max_wl],
                              yerr=self.orbit[i].error[ind][min_wl:max_wl],
                              fmt='.', label=label)
-        plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+        plt.xlabel(x_label)
         plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
         plt.legend(fontsize=legend_font_size)
         if rotate_x_ticks is not None:
@@ -351,7 +362,7 @@ class UVSpectrum(object):
 
     # Plot the spectrum
     def plot_spectrum(self, wavelength_range=None, chip_index=None,
-                      plot_uncertainties=False, rotate_x_ticks=30):
+                      plot_uncertainties=False, rotate_x_ticks=30, ref_wl=None):
         """
         Plot the spectrum, with the option of selecting a specific wavelength
         range or the red or blue chips of the detector. In order to visualize
@@ -374,6 +385,9 @@ class UVSpectrum(object):
                 ``False``.
 
             rotate_x_ticks ():
+
+            ref_wl (``float``, optional): Reference wavelength used to plot the
+                spectra in Doppler velocity space.
         """
 
         if wavelength_range is not None:
@@ -383,18 +397,23 @@ class UVSpectrum(object):
             max_wl = tools.nearest_index(self.wavelength[ind],
                                          wavelength_range[1])
 
+            if isinstance(ref_wl, float):
+                x_axis = c.c.to(u.km / u.s).value * \
+                    (self.wavelength[ind][min_wl:max_wl] - ref_wl) / ref_wl
+                x_label = r'Velocity (km s$^{-1}$)'
+            else:
+                x_axis = self.wavelength[ind][min_wl:max_wl]
+                x_label = r'Wavelength ($\mathrm{\AA}$)'
+
             # Finally plot it
             if plot_uncertainties is False:
-                plt.plot(self.wavelength[ind][min_wl:max_wl],
-                         self.flux[ind][min_wl:max_wl],
+                plt.plot(x_axis, self.flux[ind][min_wl:max_wl],
                          label=self.start_JD.value)
             else:
-                plt.errorbar(self.wavelength[ind][min_wl:max_wl],
-                             self.flux[ind][min_wl:max_wl],
+                plt.errorbar(x_axis, self.flux[ind][min_wl:max_wl],
                              yerr=self.error[ind][min_wl:max_wl],
-                             fmt='.',
-                             label=self.start_JD.value)
-            plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+                             fmt='.', label=self.start_JD.value)
+            plt.xlabel(x_label)
             plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
 
         elif chip_index is not None:

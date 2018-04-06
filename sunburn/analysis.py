@@ -327,7 +327,6 @@ class LightCurve(object):
                 wavelength_range = ds_range / light_speed * central_wl + \
                     central_wl
                 # Compute the integrated flux for the line
-                print(wavelength_range)
                 _integrate(wavelength_range)
 
             # If more than one line is requested, then the integrated fluxes
@@ -347,7 +346,6 @@ class LightCurve(object):
                     wavelength_range = ds_range / light_speed * central_wl + \
                         central_wl
                     # Compute the integrated flux for the line
-                    print(wavelength_range)
                     _integrate(wavelength_range)
                     count += 1
 
