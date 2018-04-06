@@ -68,6 +68,8 @@ class COSFUVLineList(object):
     """
     def __init__(self, wavelength_shift=0.0, range_factor=1.0):
         self.lines = {
+            'H I': [Line(1215.6702, line_width=1.3)],
+
             'C III': [Line(1174.93, formation_temperature=10 ** 4.8),
                       Line(1175.26),
                       Line(1175.59),
