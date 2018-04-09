@@ -341,7 +341,7 @@ class LightCurve(object):
                     try:
                         ds_range = np.array(velocity_range) + \
                             doppler_shift_corr[count]
-                    except TypeError:
+                    except IndexError:
                         ds_range = np.array(velocity_range) + doppler_shift_corr
                     wavelength_range = ds_range / light_speed * central_wl + \
                         central_wl

@@ -46,7 +46,7 @@ class Visit(object):
             chip. If ``None``, use all pixels. Default is ``None``.
     """
     def __init__(self, dataset_name, instrument, good_pixel_limits=None,
-                 prefix=None):
+                 prefix=None, compute_proper_error=True):
 
         self.orbit = {}
         self.split = {}
@@ -62,7 +62,10 @@ class Visit(object):
                 self.orbit[dataset_name[i]] = \
                     COSSpectrum(dataset_name[i], good_pixel_limits,
                                 prefix=prefix)
-                self.orbit[dataset_name[i]].compute_proper_error()
+                if compute_proper_error is True:
+                    self.orbit[dataset_name[i]].compute_proper_error()
+                else:
+                    pass
             elif instrument == 'stis':
                 raise NotImplementedError('STIS instrument not implemented '
                                           'yet.')
@@ -70,7 +73,8 @@ class Visit(object):
     # Plot all the spectra in a wavelength range
     def plot_spectra(self, wavelength_range=None, chip_index=None, ref_wl=None,
                      uncertainties=False, figure_sizes=(9.0, 6.5),
-                     axes_font_size=18, legend_font_size=13, rotate_x_ticks=30):
+                     axes_font_size=18, legend_font_size=13, rotate_x_ticks=30,
+                     doppler_shift=0.0):
         """
         Method used to plot all the spectra in the visit.
 
@@ -1005,3 +1009,96 @@ class CombinedSpectra(object):
         uncertainty = np.sqrt(np.sum((delta_wl[min_wl:max_wl] *
                                       self.f_unc[ind][min_wl:max_wl]) ** 2))
         return int_flux, uncertainty
+
+
+# The airglow template class
+class AirglowTemplate(object):
+    """
+
+    """
+    def __init__(self, wavelength, flux, uncertainties=None,
+                 reference_wavelength=None):
+        self.wavelength = wavelength
+        self.flux = flux
+        self.f_unc = uncertainties
+        self.ref_wl = reference_wavelength
+
+        # Other useful global variables
+        self._ls = c.c.to(u.km / u.s).value  # Light speed in km / s
+
+    # Shift the wavelengths of the airglow template
+    def adjust_template(self, doppler_velocity=0.0, wavelength_shift=0.0,
+                        scale=1.0, return_template=False):
+        """
+
+        Args:
+            doppler_velocity:
+            wavelength_shift:
+            scale:
+            return_template:
+
+        Returns:
+
+        """
+        velocity_shift = doppler_velocity / self._ls * self.ref_wl
+        if return_template is not True:
+            self.wavelength += velocity_shift + wavelength_shift
+            self.flux *= scale
+            self.f_unc *= scale
+        else:
+            new_wavelength = np.copy(self.wavelength) + velocity_shift + \
+                wavelength_shift
+            new_flux = np.copy(self.flux) * scale
+            new_f_unc = np.copy(self.f_unc) * scale
+            return new_wavelength, new_flux, new_f_unc
+
+    # Plot the airglow template
+    def plot(self, wavelength_range=None, velocity_range=None,
+             uncertainties=False, figure_sizes=(9.0, 6.5), axes_font_size=18,
+             rotate_x_ticks=0, **kwargs):
+        """
+
+        Args:
+            wavelength_range:
+            velocity_range:
+            uncertainties:
+            figure_sizes:
+            axes_font_size:
+            rotate_x_ticks:
+
+        Returns:
+
+        """
+        pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
+        pylab.rcParams['font.size'] = axes_font_size
+
+        # Plot either in wavelength- or velocity-space
+        if wavelength_range is not None:
+            min_wl = tools.nearest_index(self.wavelength, wavelength_range[0])
+            max_wl = tools.nearest_index(self.wavelength, wavelength_range[1])
+            x_axis = self.wavelength[min_wl:max_wl]
+            x_label = r'Wavelength ($\mathrm{\AA}$)'
+        elif velocity_range is not None:
+            vr = velocity_range
+            wavelength_range = [vr[0] / self._ls * self.ref_wl + self.ref_wl,
+                                vr[1] / self._ls * self.ref_wl + self.ref_wl]
+            min_wl = tools.nearest_index(self.wavelength, wavelength_range[0])
+            max_wl = tools.nearest_index(self.wavelength, wavelength_range[1])
+            x_axis = (self.wavelength[min_wl:max_wl] - self.ref_wl) / \
+                self.ref_wl * self._ls
+            x_label = r'Velocity (km s$^{-1}$)'
+        else:
+            raise ValueError('Either wavelength range or velocity range has to '
+                             'be provided.')
+
+        if uncertainties is False:
+            plt.plot(x_axis, self.flux[min_wl:max_wl], **kwargs)
+        else:
+            plt.errorbar(x_axis, self.flux[min_wl:max_wl],
+                         yerr=self.f_unc[min_wl:max_wl], fmt='.', **kwargs)
+        plt.xlabel(x_label)
+        plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
+
+        if rotate_x_ticks is not None:
+            plt.xticks(rotation=rotate_x_ticks)
+            plt.tight_layout()
