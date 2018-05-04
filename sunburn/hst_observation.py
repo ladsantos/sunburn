@@ -19,6 +19,8 @@ from astropy.io import fits
 from astropy.time import Time
 from . import tools, spectroscopy
 from scipy.integrate import simps
+from scipy.interpolate import interp1d
+from scipy.optimize import minimize
 from costools import splittag, x1dcorr
 from calcos.x1d import concatenateSegments
 
@@ -310,7 +312,8 @@ class UVSpectrum(object):
     # Compute the integrated flux in a given wavelength range
     # TODO: Offer the option to integrate between doppler shifts from line
     # center
-    def integrated_flux(self, wavelength_range,
+    def integrated_flux(self, wavelength_range=None, reference_wl=None,
+                        rv_correction=0.0, rv_range=None,
                         uncertainty_method='quadratic_sum'):
         """
         Compute the integrated flux of the COS spectrum in a user-defined
@@ -333,7 +336,17 @@ class UVSpectrum(object):
             uncertainty (``float``): Value of the uncertainty of the integrated
                 flux.
         """
-        ind = tools.pick_side(self.wavelength, wavelength_range)
+        ls = c.c.to(u.km / u.s)
+        if wavelength_range is not None:
+            ind = tools.pick_side(self.wavelength, wavelength_range)
+        else:
+            assert(reference_wl is not None and rv_range is not None,
+                   'Reference wavelength and RV range must be provided '
+                   'if you did not pick a wavelength range.')
+            #rv_range = np.array(list(rv_range))
+            rv_range += rv_correction
+            wavelength_range = rv_range * reference_wl / ls + reference_wl
+            ind = tools.pick_side(self.wavelength, wavelength_range)
 
         min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
         max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
@@ -366,7 +379,8 @@ class UVSpectrum(object):
 
     # Plot the spectrum
     def plot_spectrum(self, wavelength_range=None, chip_index=None,
-                      plot_uncertainties=False, rotate_x_ticks=30, ref_wl=None):
+                      plot_uncertainties=False, rotate_x_ticks=30, ref_wl=None,
+                      rv_range=None, **kwargs):
         """
         Plot the spectrum, with the option of selecting a specific wavelength
         range or the red or blue chips of the detector. In order to visualize
@@ -393,7 +407,6 @@ class UVSpectrum(object):
             ref_wl (``float``, optional): Reference wavelength used to plot the
                 spectra in Doppler velocity space.
         """
-
         if wavelength_range is not None:
             ind = tools.pick_side(self.wavelength, wavelength_range)
             min_wl = tools.nearest_index(self.wavelength[ind],
@@ -412,11 +425,11 @@ class UVSpectrum(object):
             # Finally plot it
             if plot_uncertainties is False:
                 plt.plot(x_axis, self.flux[ind][min_wl:max_wl],
-                         label=self.start_JD.value)
+                         label=self.start_JD.value, **kwargs)
             else:
                 plt.errorbar(x_axis, self.flux[ind][min_wl:max_wl],
                              yerr=self.error[ind][min_wl:max_wl],
-                             fmt='.', label=self.start_JD.value)
+                             fmt='.', label=self.start_JD.value, **kwargs)
             plt.xlabel(x_label)
             plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
 
@@ -428,13 +441,13 @@ class UVSpectrum(object):
             if plot_uncertainties is False:
                 plt.plot(self.wavelength[chip_index],
                          self.flux[chip_index],
-                         label=self.start_JD.value)
+                         label=self.start_JD.value, **kwargs)
             else:
                 plt.errorbar(self.wavelength[chip_index],
                              self.flux[chip_index],
                              yerr=self.error[chip_index],
                              fmt='.',
-                             label=self.start_JD.value)
+                             label=self.start_JD.value, **kwargs)
             plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
             plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
 
@@ -445,19 +458,6 @@ class UVSpectrum(object):
         if rotate_x_ticks is not None:
             plt.xticks(rotation=rotate_x_ticks)
             plt.tight_layout()
-
-    # Apply wavelength shift
-    def wavelength_shift(self, delta_lambda=None, delta_v=None):
-        """
-
-        Args:
-            delta_lambda:
-            delta_v:
-
-        Returns:
-
-        """
-        raise NotImplementedError()
 
     # Plot specific spectral lines
     def plot_lines(self, line, plot_uncertainties=False, rotate_x_ticks=30,
@@ -507,6 +507,22 @@ class UVSpectrum(object):
                          label=self.start_JD.value)
         plt.xlabel(r'Velocity (km s$^{-1}$)')
         plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
+
+    # Extract the wavelength array from a given range
+    def extract_wl(self, wavelength_range):
+        """
+
+        Args:
+            wavelength_range:
+
+        Returns:
+
+        """
+        ind = tools.pick_side(self.wavelength, wavelength_range)
+        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
+        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+        wl_array = self.wavelength[ind][min_wl:max_wl + 1]
+        return wl_array
 
 
 # COS spectrum class
@@ -734,7 +750,9 @@ class COSSpectrum(UVSpectrum):
             self.split[i].plot_spectrum(wavelength_range, chip_index,
                                         plot_uncertainties)
 
-    def verify_systematic(self, line_list, plot=True):
+    def verify_systematic(self, line_list, plot=True, normalize=False,
+                          return_norm=False, fold=True, rv_corr=None,
+                          rv_range=None, **kwargs):
         """
 
         Args:
@@ -764,12 +782,26 @@ class COSSpectrum(UVSpectrum):
             n_lines = len(line_list[species])
             # For each spectral line of a species
             for i in range(n_lines):
-                wl_range = line_list[species][i].wavelength_range
-                # For each split in the observation
-                for split in self.split:
-                    f, unc = split.integrated_flux(wavelength_range=wl_range)
-                    flux.append(f)
-                    f_unc.append(unc)
+                if rv_corr is not None:
+                    rv_shift = rv_corr[species][i] * u.km / u.s
+                else:
+                    rv_shift = 0.0
+                if rv_range is not None:
+                    ref_wl = line_list[species][i].central_wavelength
+                    for split in self.split:
+                        f, unc = split.integrated_flux(reference_wl=ref_wl,
+                                                       rv_range=rv_range,
+                                                       rv_correction=rv_shift)
+                        flux.append(f)
+                        f_unc.append(unc)
+                else:
+                    wl_range = line_list[species][i].wavelength_range
+                    # For each split in the observation
+                    for split in self.split:
+                        f, unc = split.integrated_flux(
+                            wavelength_range=wl_range)
+                        flux.append(f)
+                        f_unc.append(unc)
 
         # Compute times of the observation (this is a repetition of code, should
         # be automated at some point.
@@ -792,21 +824,36 @@ class COSSpectrum(UVSpectrum):
         total_flux = flux.sum(axis=0)
         self._systematics['flux'] = total_flux
         total_unc = ((f_unc ** 2).sum(axis=0)) ** 0.5
+        self._systematics['f_unc'] = total_unc
 
         # Plot the computed fluxes
         if plot is True:
             x_shift = (self.end_JD.jd + self.start_JD.jd) / 2
             norm = np.mean(total_flux)
-            t_hour = ((time - x_shift) * u.d).to(u.h).value
-            plt.errorbar(t_hour, total_flux / norm,
-                         xerr=(t_span * u.d).to(u.h).value,
-                         yerr=total_unc / norm, fmt='o')
-            plt.xlabel('Time (h)')
-            plt.ylabel('Normalized sum of integrated fluxes')
+            t_hour = ((time - x_shift) * u.d).to(u.min).value
+            if fold is True:
+                x_axis = t_hour
+            else:
+                x_axis = ((time - time[0]) * u.d).to(u.min).value
+            if normalize is True:
+                plt.errorbar(x_axis, total_flux / norm,
+                             xerr=(t_span * u.d).to(u.min).value,
+                             yerr=total_unc / norm, fmt='o', **kwargs)
+                plt.ylabel('Normalized sum of integrated fluxes')
+            else:
+                plt.errorbar(x_axis, total_flux,
+                             xerr=(t_span * u.d).to(u.min).value,
+                             yerr=total_unc, fmt='o', **kwargs)
+                plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$)')
+            plt.xlabel('Time (min)')
+
         else:
             norm = np.mean(total_flux)
 
-        return norm
+        if return_norm is True:
+            return norm
+        else:
+            pass
 
     # Systematic correction using a polynomial
     def correct_systematic(self, line_list, baseline_level, poly_deg=1,
@@ -1021,36 +1068,64 @@ class AirglowTemplate(object):
         self.wavelength = wavelength
         self.flux = flux
         self.f_unc = uncertainties
-        self.ref_wl = reference_wavelength
+        self._ls = c.c.to(u.km / u.s).value
+        if reference_wavelength is not None:
+            self.ref_wl = reference_wavelength
+        else:
+            self.ref_wl = np.mean(self.wavelength)
+        self.velocity = (self.wavelength - self.ref_wl) * self._ls/ self.ref_wl
 
         # Other useful global variables
         self._ls = c.c.to(u.km / u.s).value  # Light speed in km / s
 
-    # Shift the wavelengths of the airglow template
-    def adjust_template(self, doppler_velocity=0.0, wavelength_shift=0.0,
-                        scale=1.0, return_template=False):
+    # Apply Doppler shift to the airglow spectrum
+    def adjust_spectrum(self, doppler_shift=0.0 * u.km / u.s, scale_flux=1.0,
+                        interpolation_type='linear', fill_value=0.0,
+                        update_spectrum=False):
         """
 
         Args:
-            doppler_velocity:
-            wavelength_shift:
-            scale:
-            return_template:
+            doppler_shift:
+            scale_flux:
+            interpolation_type:
+            fill_value:
+            update_spectrum:
 
         Returns:
 
         """
-        velocity_shift = doppler_velocity / self._ls * self.ref_wl
-        if return_template is not True:
-            self.wavelength += velocity_shift + wavelength_shift
-            self.flux *= scale
-            self.f_unc *= scale
+        new_flux, new_f_unc = tools.doppler_shift(doppler_shift, self.ref_wl,
+                                                  self.wavelength, self.flux,
+                                                  self.f_unc,
+                                                  interpolation_type,
+                                                  fill_value)
+        new_flux *= scale_flux
+        new_f_unc *= scale_flux
+        if update_spectrum is False:
+            return new_flux, new_f_unc
         else:
-            new_wavelength = np.copy(self.wavelength) + velocity_shift + \
-                wavelength_shift
-            new_flux = np.copy(self.flux) * scale
-            new_f_unc = np.copy(self.f_unc) * scale
-            return new_wavelength, new_flux, new_f_unc
+            self.flux = np.copy(new_flux)
+            self.f_unc = np.copy(new_f_unc)
+
+    # Interpolate the template to a specific wavelengths array
+    def interpolate_to(self, wavelength, interpolation_type='linear'):
+        """
+
+        Args:
+            wavelength:
+            interpolation_type:
+
+        Returns:
+
+        """
+        x = self.wavelength
+        y1 = self.flux
+        y2 = self.f_unc
+        f1 = interp1d(x, y1, kind=interpolation_type, fill_value='extrapolate')
+        f2 = interp1d(x, y2, kind=interpolation_type, fill_value='extrapolate')
+        new_flux = f1(wavelength)
+        new_f_unc = f2(wavelength)
+        return new_flux, new_f_unc
 
     # Plot the airglow template
     def plot(self, wavelength_range=None, velocity_range=None,
@@ -1102,3 +1177,290 @@ class AirglowTemplate(object):
         if rotate_x_ticks is not None:
             plt.xticks(rotation=rotate_x_ticks)
             plt.tight_layout()
+
+
+# The general observed line profile class
+class SpectralLine(object):
+    """
+
+    """
+    def __init__(self, cos_observation, central_wavelength,
+                 doppler_shift_range=(-100 * u.km / u.s, 100 * u.km / u.s)):
+
+        # Check if the passed parameters are of correct type
+        if isinstance(cos_observation, COSSpectrum) is True:
+            cos_observation = [cos_observation]
+        elif isinstance(cos_observation, list) is True:
+            pass
+        else:
+            raise ValueError('`cos_observation` must be a `COSSpectrum` object '
+                             'or a list of `COSSpectrum` objects.')
+
+        self.n_spectra = len(cos_observation)
+
+        if isinstance(central_wavelength, u.Quantity) is True:
+            self.w0 = central_wavelength.to(u.angstrom).value
+        else:
+            self.w0 = central_wavelength
+
+        # Figure out the wavelength range
+        self.l_speed = c.c.to(u.km / u.s).value
+        try:
+            self.ds_range = (doppler_shift_range[0].to(u.km / u.s).value,
+                             doppler_shift_range[1].to(u.km / u.s).value)
+        except AttributeError:
+            self.ds_range = (doppler_shift_range[0], doppler_shift_range[1])
+        self.wl_range = (self.ds_range[0] / self.l_speed * self.w0 + self.w0,
+                         self.ds_range[1] / self.l_speed * self.w0 + self.w0)
+
+        # Extract the data from the spectrum, for each observation in the list
+        # of COS spectra
+        ind = tools.pick_side(cos_observation[0].wavelength, self.wl_range)
+        min_wl = tools.nearest_index(cos_observation[0].wavelength[ind],
+                                     self.wl_range[0])
+        max_wl = tools.nearest_index(cos_observation[0].wavelength[ind],
+                                     self.wl_range[1])
+
+        self.wavelength = []
+        self.flux = []
+        self.f_unc = []
+        self.velocity = []
+        self.time = []
+        self.start_JD = []
+        self.end_JD = []
+        for ck in cos_observation:
+            self.wavelength.append(ck.wavelength[ind][min_wl:max_wl])
+            self.flux.append(ck.flux[ind][min_wl:max_wl])
+            self.f_unc.append(ck.error[ind][min_wl:max_wl])
+            self.velocity.append((self.wavelength[-1] - self.w0) *
+                                 self.l_speed / self.w0)
+            # Obtain other info that can be useful
+            self.start_JD.append(ck.start_JD.jd)
+            self.end_JD.append(ck.end_JD.jd)
+            self.time.append((self.start_JD[-1] + self.end_JD[-1]) / 2)
+
+    # Apply a Doppler shift to the spectra
+    def doppler_shift(self, velocity, interpolation_type='linear',
+                      fill_value=0.0):
+        """
+
+        Args:
+            velocity:
+            interpolation_type:
+            fill_value:
+
+        Returns:
+
+        """
+        for i in range(self.n_spectra):
+            new_flux, new_f_unc = tools.doppler_shift(velocity, self.w0,
+                                                      self.wavelength[i],
+                                                      self.flux[i],
+                                                      self.f_unc[i],
+                                                      interpolation_type,
+                                                      fill_value)
+            self.flux[i] = np.copy(new_flux)
+            self.f_unc[i] = np.copy(new_f_unc)
+
+    # Plot the lines
+    def plot(self, velocity_space=True, x_range=None, **kwargs):
+        """
+
+        Returns:
+
+        """
+        if velocity_space is True:
+            for i in range(self.n_spectra):
+                plt.plot(self.velocity[i], self.flux[i], **kwargs)
+            plt.xlabel(r'Velocity (km s$^{-1}$)')
+            if x_range is None:
+                x_range = self.ds_range
+            else:
+                pass
+        else:
+            for i in range(self.n_spectra):
+                plt.plot(self.wavelength[i], self.flux[i], **kwargs)
+            plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+            plt.xticks(rotation=30)
+            if x_range is None:
+                x_range = self.wl_range
+            else:
+                pass
+        plt.xlim(x_range)
+        plt.ylabel(r'Flux (erg s$^{-1}$ $\mathrm{\AA}^{-1}$ cm$^{-2}$)')
+
+    # Integrate the flux of the lines between a range of velocities
+    def integrated_flux(self, velocity_range=(-100, 100)):
+        """
+
+        Args:
+            velocity_range:
+
+        Returns:
+
+        """
+        int_flux = []
+        uncertainty = []
+
+        for i in range(self.n_spectra):
+            min_v = tools.nearest_index(self.velocity[i], velocity_range[0])
+            max_v = tools.nearest_index(self.velocity[i], velocity_range[1])
+            delta_wl = self.wavelength[i][1:] - self.wavelength[i][:-1]
+            int_flux = simps(self.flux[i][min_v:max_v],
+                             self.wavelength[i][min_v:max_v])
+            uncertainty = np.sqrt(np.sum((delta_wl[min_v:max_v] *
+                                          self.f_unc[i][min_v:max_v]) ** 2))
+
+        return int_flux, uncertainty
+
+
+# The Lyman-alpha profile class
+class LymanAlphaLine(SpectralLine):
+    """
+
+    """
+    def __init__(self, cos_observation, airglow_template,
+                 doppler_shift_range=(-300 * u.km / u.s, 300 * u.km / u.s)):
+        super(LymanAlphaLine, self).__init__(cos_observation, 1215.6702,
+                                        doppler_shift_range=doppler_shift_range)
+
+        # Check if the passed parameters are of correct type
+        if isinstance(airglow_template, AirglowTemplate) is False:
+            raise ValueError('`airglow_template` must be an `AirglowTemplate` '
+                             'object.')
+        else:
+            self.ag_template = airglow_template
+
+        # Start some useful global variables
+        self.clean_flux = []
+        self.clean_f_unc = []
+
+    # Fit airglow template to observed line within a specific range of the
+    # spectrum
+    def fit_template(self, velocity_range, shift_guess, scales_guess,
+                     fill_value=1E-18, shift_bounds=(None, None)):
+        """
+
+        Args:
+            velocity_range:
+            shift_guess:
+            scales_guess:
+            fill_value:
+            shift_bounds:
+
+        Returns:
+
+        """
+        min_v = tools.nearest_index(self.velocity[0], velocity_range[0])
+        max_v = tools.nearest_index(self.velocity[0], velocity_range[1])
+
+        # The badness of the fit function
+        def _rank(params):
+            badness = []
+
+            # For each observation...
+            for i in range(self.n_spectra):
+
+                # Compute the fluxes based on shift and scale
+                templ_flux, templ_error = \
+                    self.ag_template.adjust_spectrum(params[0], params[i + 1],
+                                                     fill_value=fill_value)
+
+                # Create temporary template
+                temporary_ag = AirglowTemplate(self.ag_template.wavelength,
+                                               templ_flux, templ_error, self.w0)
+                # Interpolate to the wavelengths of the observation
+                interp_flux, interp_error = \
+                    temporary_ag.interpolate_to(self.wavelength[i])
+                # Compute the difference between template and observed spectrum
+                diff = ((self.flux[i] * 1E15 - interp_flux * 1E15) ** 2) ** 0.5
+                weight = ((self.f_unc[i] / self.flux[i]) ** 2 +
+                          (templ_error / templ_flux) ** 2) ** 0.5 * diff
+                badness.append(np.sum(diff[min_v:max_v] * weight[min_v:max_v]))
+
+            badness = np.array(badness)
+            return np.sum(badness)
+
+        # Perform the minimization of the badness of fit function
+        guess = np.array([shift_guess] + scales_guess)
+        bounds = [list(shift_bounds)]
+        # Need to add bounds for each of the scale parameters, but all of them
+        # are `None`
+        for i in range(self.n_spectra):
+            bounds.append([None, None])
+        result = minimize(_rank, x0=guess, method='TNC', bounds=bounds)
+
+        # Compute the flux and uncertainties of the best fit clean line
+        for i in range(self.n_spectra):
+            bf_flux, bf_error = \
+                self.ag_template.adjust_spectrum(result['x'][0],
+                                                 result['x'][i + 1],
+                                                 fill_value=fill_value)
+            bf_templ = AirglowTemplate(self.ag_template.wavelength, bf_flux,
+                                       bf_error, self.w0)
+            bf_flux, bf_error = bf_templ.interpolate_to(self.wavelength[i])
+            self.clean_flux.append(self.flux[i] - bf_flux)
+            temp = self.clean_flux[i] * ((self.f_unc[i] / self.flux[i]) ** 2 +
+                                         (bf_error / bf_flux) ** 2) ** 0.5
+            self.clean_f_unc.append(temp)
+
+        return result
+
+    # Plot the clean spectrum
+    def plot_clean(self, velocity_space=True, x_range=None,
+                   select_exposures=None, **kwargs):
+        """
+
+        Returns:
+
+        """
+        if select_exposures is None:
+            select_exposures = range(self.n_spectra)
+        else:
+            pass
+
+        if velocity_space is True:
+            for i in select_exposures:
+                plt.plot(self.velocity[i], self.clean_flux[i], **kwargs)
+            plt.xlabel(r'Velocity (km s$^{-1}$)')
+            if x_range is None:
+                x_range = self.ds_range
+            else:
+                pass
+        else:
+            for i in select_exposures:
+                plt.plot(self.wavelength[i], self.clean_flux[i], **kwargs)
+            plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
+            plt.xticks(rotation=30)
+            if x_range is None:
+                x_range = self.wl_range
+            else:
+                pass
+        plt.xlim(x_range)
+        plt.ylabel(r'Flux (erg s$^{-1}$ $\mathrm{\AA}^{-1}$ cm$^{-2}$)')
+
+
+    # Compute the integrated flux in the clean spectrum
+    def integrated_clean_flux(self, velocity_range=(-100, 100)):
+        """
+
+        Args:
+            velocity_range:
+
+        Returns:
+
+        """
+        min_v = tools.nearest_index(self.velocity[0], velocity_range[0])
+        max_v = tools.nearest_index(self.velocity[0], velocity_range[1])
+
+        int_flux = []
+        uncertainty = []
+
+        for i in range(self.n_spectra):
+            delta_wl = self.wavelength[i][1:] - self.wavelength[i][:-1]
+            int_flux.append(simps(self.clean_flux[i][min_v:max_v],
+                                  self.wavelength[i][min_v:max_v]))
+            uncertainty.append(
+                np.sqrt(np.sum((delta_wl[min_v:max_v] *
+                                self.clean_f_unc[i][min_v:max_v]) ** 2)))
+        return int_flux, uncertainty

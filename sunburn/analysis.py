@@ -149,12 +149,14 @@ class LightCurve(object):
 
         line_list (``dict``, optional): Spectral line list.
     """
-    def __init__(self, visit, transit=None, line_list=None):
+    def __init__(self, visit, transit=None, line_list=None,
+                 transit_search_expansion=(0.0 * u.d, 0.0 * u.d)):
         self.visit = visit
         self.transit = transit
         self.line_list = line_list
 
         # Instantiating useful global variables
+        self._expand = transit_search_expansion
         self.integrated_flux = None
         self.time = []
         self.t_span = []
@@ -196,7 +198,8 @@ class LightCurve(object):
         # Figure out the range of julian dates spanned by the visit
         jd_start = np.array(jd_start)
         jd_end = np.array(jd_end)
-        self.jd_range = (np.min(jd_start), np.max(jd_end))
+        self.jd_range = (np.min(jd_start) - self._expand[0],
+                         np.max(jd_end) + self._expand[1])
 
         # Transform lists into numpy arrays
         self.time = np.array(self.time)
@@ -578,3 +581,12 @@ class CombinedLightCurve(object):
         else:
             plt.ylabel(r'Normalized integrated flux')
         plt.xlabel('Time (h)')
+
+
+# Light curve object for a specific line
+class LineLightCurve(object):
+    """
+
+    """
+    def __init__(self, spectral_lin):
+        pass

@@ -9,6 +9,7 @@ import astropy.units as u
 import astropy.constants as c
 from scipy.signal import correlate
 from scipy.optimize import curve_fit
+from scipy.interpolate import interp1d
 
 
 def nearest_index(array, target_value):
@@ -157,3 +158,39 @@ def fit_gaussian(x, y, x_0, fwhm_0, amplitude_0):
     # Perform the fit
     coeff, var = curve_fit(gaussian, x, y, p0=p0)
     return coeff
+
+
+# Apply Doppler shift to a spectrum
+def doppler_shift(velocity, ref_wl, wavelength, flux, uncertainty,
+                  interp_type='linear', fill_value='extrapolate'):
+    """
+
+    Args:
+        velocity:
+        ref_wl:
+        wavelength:
+        flux:
+        uncertainty:
+        interp_type:
+
+    Returns:
+
+    """
+    l_speed = c.c.to(u.km / u.s).value
+    try:
+        dv = velocity.to(u.km / u.s).value
+    except AttributeError:
+        dv = velocity
+
+    shift = dv / l_speed * ref_wl
+    old_wavelength = np.copy(wavelength)
+    old_flux = np.copy(flux)
+    old_error = np.copy(uncertainty)
+    new_wv = np.copy(wavelength) + shift
+    func0 = interp1d(new_wv, old_flux, kind=interp_type,
+                     fill_value=fill_value, bounds_error=False)
+    func1 = interp1d(new_wv, old_error, kind=interp_type,
+                     fill_value=fill_value, bounds_error=False)
+    new_flux = func0(old_wavelength)
+    new_uncertainty = func1(old_wavelength)
+    return new_flux, new_uncertainty
