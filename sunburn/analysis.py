@@ -119,6 +119,7 @@ class Transit(object):
         jd_range = np.array(jd_range)
         jd0 = Time(jd_range[0], format='jd')
         jd1 = Time(jd_range[1], format='jd')
+        jd_center = (jd1.jd + jd0.jd) / 2
 
         n_transits = int((jd1 - self.transit_midpoint).value /
                          self.period.to(u.d).value) - \
@@ -129,8 +130,17 @@ class Transit(object):
             midtransit_times = \
                 self.system.next_primary_eclipse_time(jd0,
                                                       n_eclipses=n_transits)
+        # If no transit was found, simply figure out the closest event
         else:
-            midtransit_times = None
+            next_event = self.system.next_primary_eclipse_time(jd1,
+                n_eclipses=1)[0]
+            next_event = Time(next_event, format='jd')
+            previous_event = next_event - self.period
+            if next_event.jd - jd_center < jd_center - previous_event.jd:
+                midtransit_times = Time([next_event.value], format='jd')
+            else:
+                midtransit_times = Time([previous_event.value],
+                                        format='jd')
 
         return midtransit_times
 
@@ -186,6 +196,7 @@ class LightCurve(object):
                 if self.tt_time is None or self.tt_t_span is None:
                     self.tt_time = []
                     self.tt_t_span = []
+                    self.tt_phase = []
                 else:
                     pass
                 n_splits = len(orbit.split)
@@ -218,11 +229,50 @@ class LightCurve(object):
 
         # Compute the phases in relation to transit midpoint
         if self.transit is not None and self.transit_midpoint is not None:
-            self.phase = ((self.time - self.transit_midpoint.value) *
-                          u.d).to(u.h).value
-            if self.tt_time is not None:
-                self.tt_phase = ((self.tt_time - self.transit_midpoint.value) *
-                                 u.d).to(u.h).value
+            # If there is only one transit inside the visit
+            if len(self.transit_midpoint) == 1:
+                self.phase = ((self.time - self.transit_midpoint.value) *
+                              u.d).to(u.h).value
+                if self.tt_time is not None:
+                    self.tt_phase = ((self.tt_time - self.transit_midpoint.value) *
+                                     u.d).to(u.h).value
+                    # Check if the phases are the best possible
+                    for p in self.tt_phase:
+                        if p < -self.transit.period.to(u.h).value / 2:
+                            p += self.transit.period.to(u.h).value
+                        elif p > self.transit.period.to(u.h).value / 2:
+                            p -= self.transit.period.to(u.h).value
+                        else:
+                            pass
+
+            # If there are two or more transits inside the visit, figure out
+            # the phases
+            else:
+                self.phase = np.zeros_like(self.time)
+                for i in range(len(self.time)):
+                    time_diff = abs(self.time[i] - self.transit_midpoint.value)
+                    ind = np.where(time_diff == np.min(time_diff))
+                    self.phase[i] = \
+                        ((self.time[i] - self.transit_midpoint[ind].value) *
+                         u.d).to(u.h).value
+                if self.tt_time is not None:
+                    for i in range(len(self.tt_time)):
+                        time_diff = abs(
+                            self.tt_time[i] - self.transit_midpoint.value)
+                        ind = np.where(time_diff == np.min(time_diff))
+                        self.tt_phase.append(
+                            ((self.tt_time[i] - self.transit_midpoint[ind].value) *
+                             u.d).to(u.h).value)
+                    self.tt_phase = np.array(self.tt_phase)
+
+            # Check if phases are good
+            for i in range(len(self.phase)):
+                if self.phase[i] < -self.transit.period.to(u.h).value / 2:
+                    self.phase[i] += self.transit.period.to(u.h).value
+                elif self.phase[i] > self.transit.period.to(u.h).value / 2:
+                    self.phase[i] -= self.transit.period.to(u.h).value
+                else:
+                    pass
 
     # Systematic correction using a polynomial
     def correct_systematic(self, reference_line_list, baseline_level,
@@ -252,7 +302,7 @@ class LightCurve(object):
     # Compute the integrated flux
     def compute_flux(self, velocity_range=None, transition=None,
                      line_index=None, doppler_shift_corr=0.0,
-                     wavelength_range=None):
+                     wavelength_range=None, recompute_from_splits=False):
         """
         Compute the flux in a given wavelength range or for a line from the line
         list.
@@ -301,11 +351,20 @@ class LightCurve(object):
                 # there are time-tag split data available
                 if orbit.split is not None:
                     n_splits = len(orbit.split)
+                    temp_int_f = 0
+                    temp_f_unc = 0
                     for i in range(n_splits):
                         int_f, unc = orbit.split[i].integrated_flux(
                             wl_range)
+                        temp_int_f += int_f
+                        temp_f_unc += unc ** 2
                         self.tt_integrated_flux.append(int_f)
                         self.tt_f_unc.append(unc)
+
+                    # If user asks to recompute fluxes from splits
+                    if recompute_from_splits is True:
+                        self.integrated_flux[-1] = temp_int_f / n_splits
+                        self.f_unc[-1] = (temp_f_unc ) ** 0.5 / n_splits
                 i += 1
 
         # If the wavelength range is provided, just straight out compute the LC
@@ -375,8 +434,8 @@ class LightCurve(object):
 
     # Plot the light curve
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
-             label_choice='iso_date', symbol_color=None, fold=False,
-             plot_splits=True, norm_factor=None):
+             label_choice='iso_date', symbol='o', symbol_color=None, fold=False,
+             plot_splits=True, norm_factor=None, **kwargs):
         """
         Plot the light curve. It is necessary to use
         ``matplotlib.pyplot.plot()`` after running this method to visualize the
@@ -431,17 +490,14 @@ class LightCurve(object):
         # Plot the integrated fluxes
         if fold is False:
             plt.errorbar(self.time, self.integrated_flux / norm,
-                         xerr=self.t_span, yerr=self.f_unc / norm, fmt='o',
-                         label=label, color=symbol_color)
+                         xerr=self.t_span, yerr=self.f_unc / norm, fmt=symbol,
+                         label=label, color=symbol_color, **kwargs)
             plt.xlabel('Julian date')
         else:
-            time_mod = \
-                ((self.time - self.transit_midpoint.value) * u.d).to(u.h).value
             t_span_mod = (self.t_span * u.d).to(u.h).value
-            plt.errorbar(time_mod,
-                         self.integrated_flux / norm, xerr=t_span_mod,
-                         yerr=self.f_unc / norm, fmt='o', label=label,
-                         color=symbol_color)
+            plt.errorbar(self.phase, self.integrated_flux / norm,
+                         xerr=t_span_mod, yerr=self.f_unc / norm, fmt=symbol,
+                         label=label, color=symbol_color, **kwargs)
             plt.xlabel('Time (h)')
 
         if norm_factor is None:
@@ -456,15 +512,8 @@ class LightCurve(object):
                              xerr=self.tt_t_span, yerr=self.tt_f_unc / norm,
                              fmt='.', color=symbol_color, alpha=0.2)
             else:
-                # TODO: For now this only works if there's only one transit
-                # per visit. Implement a solution for when there's more than
-                # one transit event.
-                time_mod = \
-                    ((self.tt_time - self.transit_midpoint.value) * u.d).to(
-                        u.h).value
                 t_span_mod = (self.tt_t_span * u.d).to(u.h).value
-                plt.errorbar(time_mod,
-                             self.tt_integrated_flux / norm,
+                plt.errorbar(self.tt_phase, self.tt_integrated_flux / norm,
                              xerr=t_span_mod, yerr=self.tt_f_unc / norm,
                              fmt='.', color=symbol_color, alpha=0.2)
 
@@ -540,7 +589,8 @@ class CombinedLightCurve(object):
 
     # Plot the combined light curve
     def plot(self, norm=1, figure_sizes=(9.0, 6.5), axes_font_size=18,
-             label='', symbol=None, symbol_color=None, symbol_size=None):
+             label='', symbol=None, symbol_color=None, symbol_size=None,
+             **kwargs):
         """
 
         Args:
@@ -559,7 +609,7 @@ class CombinedLightCurve(object):
 
         plt.errorbar(self.phase, self.integrated_flux / norm,
                      yerr=self.f_unc / norm, fmt=symbol, label=label,
-                     color=symbol_color, markersize=symbol_size)
+                     color=symbol_color, markersize=symbol_size, **kwargs)
 
         # Plot the transit lines
         plt.axvline(x=0.0, ls='--', color='k')

@@ -14,6 +14,7 @@ import astropy.units as u
 import astropy.constants as c
 import os
 import glob
+import emcee
 
 from astropy.io import fits
 from astropy.time import Time
@@ -73,10 +74,12 @@ class Visit(object):
                                           'yet.')
 
     # Plot all the spectra in a wavelength range
-    def plot_spectra(self, wavelength_range=None, chip_index=None, ref_wl=None,
-                     uncertainties=False, figure_sizes=(9.0, 6.5),
-                     axes_font_size=18, legend_font_size=13, rotate_x_ticks=30,
-                     doppler_shift=0.0):
+    def plot_spectra(self, wavelength_range=None, velocity_range=None,
+                     ref_wl=None, chip_index=None,  uncertainties=False,
+                     figure_sizes=(9.0, 6.5), doppler_shift_corr=0.0,
+                     velocity_space=False, axes_font_size=18, legend=False,
+                     legend_font_size=13, rotate_x_ticks=30, labels=None,
+                     **mpl_kwargs):
         """
         Method used to plot all the spectra in the visit.
 
@@ -108,11 +111,22 @@ class Visit(object):
         pylab.rcParams['font.size'] = axes_font_size
 
         for i in self.orbit:
-            # Use the start time of observation as label
-            label = self.orbit[i].start_JD.iso
+            if isinstance(labels, str):
+                label = labels
+            elif isinstance(labels, list):
+                label = labels[i]
+            else:
+                # Use the start time of observation as label
+                label = self.orbit[i].start_JD.iso
+
+            # Compute the wavelength shift correction
+            if ref_wl is not None:
+                wl_shift = ref_wl * doppler_shift_corr / c.c.to(u.km / u.s).value
+            else:
+                wl_shift = 0.0
 
             # Use either the wavelength range or the chip_index
-            if wavelength_range is None:
+            if wavelength_range is None and velocity_range is None:
                 k = chip_index
                 try:
                     wavelength_range = [min(self.orbit[i].wavelength[k]) + 1,
@@ -123,68 +137,45 @@ class Visit(object):
             else:
                 pass
 
+            if velocity_range is not None:
+                vi = velocity_range[0]
+                vf = velocity_range[1]
+                ls = c.c.to(u.km / u.s).value
+                wavelength_range = (vi / ls * ref_wl + ref_wl,
+                                    vf / ls * ref_wl + ref_wl)
+
             # Find which side of the chip corresponds to the wavelength range
             ind = tools.pick_side(self.orbit[i].wavelength, wavelength_range)
             # Now find which spectrum indexes correspond to the requested
             # wavelength
             min_wl = tools.nearest_index(self.orbit[i].wavelength[ind],
-                                         wavelength_range[0])
+                                         wavelength_range[0] - wl_shift)
             max_wl = tools.nearest_index(self.orbit[i].wavelength[ind],
-                                         wavelength_range[1])
+                                         wavelength_range[1] - wl_shift)
 
-            if isinstance(ref_wl, float):
+            if velocity_space is True:
                 x_axis = \
-                    (self.orbit[i].wavelength[ind][min_wl:max_wl] - ref_wl) / \
-                    ref_wl * c.c.to(u.km / u.s).value
+                    (self.orbit[i].wavelength[ind][min_wl:max_wl] + wl_shift -
+                     ref_wl) / ref_wl * c.c.to(u.km / u.s).value
                 x_label = r'Velocity (km s$^{-1}$)'
             else:
-                x_axis = self.orbit[i].wavelength[ind][min_wl:max_wl]
+                x_axis = self.orbit[i].wavelength[ind][min_wl:max_wl] + wl_shift
                 x_label = r'Wavelength ($\mathrm{\AA}$)'
 
             if uncertainties is False:
                 plt.plot(x_axis, self.orbit[i].flux[ind][min_wl:max_wl],
-                         label=label)
+                         label=label, **mpl_kwargs)
             else:
                 plt.errorbar(x_axis, self.orbit[i].flux[ind][min_wl:max_wl],
                              yerr=self.orbit[i].error[ind][min_wl:max_wl],
-                             fmt='.', label=label)
+                             fmt='.', label=label, **mpl_kwargs)
         plt.xlabel(x_label)
         plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
-        plt.legend(fontsize=legend_font_size)
+        if legend is True:
+            plt.legend(fontsize=legend_font_size)
         if rotate_x_ticks is not None:
             plt.xticks(rotation=rotate_x_ticks)
             plt.tight_layout()
-
-    # Co-add spectra in a visit
-    def coadd_spectra(self):
-        """
-
-        Returns:
-        """
-
-        self.coadd_flux = 0
-        self.coadd_f_unc = 0
-        #self.coadd_time = 0
-        #self.coadd_t_span = 0
-        for orbit in self.orbit:
-            self.coadd_flux += self.orbit[orbit].flux
-            self.coadd_f_unc += self.orbit[orbit].error ** 2
-            #self.coadd_time.append(
-            #    (self.orbit[orbit].start_JD.value +
-            #     self.orbit[orbit].end_JD.value) / 2)
-            #self.coadd_t_span.append(
-            #    (self.orbit[orbit].end_JD - self.orbit[orbit].start_JD) / 2)
-        self.coadd_flux /= self.n_orbit
-        self.coadd_f_unc = np.sqrt(self.coadd_f_unc) / self.n_orbit
-        #self.coadd_time = np.array(self.coadd_time)
-
-        # Perform the co-addition
-        #self.coadd_flux = np.mean(self.coadd_flux, axis=0)
-        #self.coadd_f_unc = (np.sum(self.coadd_f_unc ** 2, axis=0)) ** 0.5 / \
-        #    self.n_orbit
-        #self.coadd_time = np.mean(self.coadd_time, axis=0)
-        #self.coadd_time = Time(self.coadd_time, format='jd')
-
 
     # Time-tag split the observations in the visit
     def time_tag_split(self, n_splits, path_calibration_files, out_dir):
@@ -310,10 +301,8 @@ class UVSpectrum(object):
         self.exp_time = self.data['EXPTIME'][0]
 
     # Compute the integrated flux in a given wavelength range
-    # TODO: Offer the option to integrate between doppler shifts from line
-    # center
-    def integrated_flux(self, wavelength_range=None, reference_wl=None,
-                        rv_correction=0.0, rv_range=None,
+    def integrated_flux(self, wavelength_range=None, velocity_range=None,
+                        reference_wl=None, rv_correction=0.0,
                         uncertainty_method='quadratic_sum'):
         """
         Compute the integrated flux of the COS spectrum in a user-defined
@@ -340,12 +329,12 @@ class UVSpectrum(object):
         if wavelength_range is not None:
             ind = tools.pick_side(self.wavelength, wavelength_range)
         else:
-            assert(reference_wl is not None and rv_range is not None,
+            assert(reference_wl is not None and velocity_range is not None,
                    'Reference wavelength and RV range must be provided '
                    'if you did not pick a wavelength range.')
-            #rv_range = np.array(list(rv_range))
-            rv_range += rv_correction
-            wavelength_range = rv_range * reference_wl / ls + reference_wl
+            velocity_range += rv_correction
+            wavelength_range = velocity_range * reference_wl / ls + reference_wl
+            print(wavelength_range)
             ind = tools.pick_side(self.wavelength, wavelength_range)
 
         min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
@@ -380,7 +369,7 @@ class UVSpectrum(object):
     # Plot the spectrum
     def plot_spectrum(self, wavelength_range=None, chip_index=None,
                       plot_uncertainties=False, rotate_x_ticks=30, ref_wl=None,
-                      rv_range=None, **kwargs):
+                      **kwargs):
         """
         Plot the spectrum, with the option of selecting a specific wavelength
         range or the red or blue chips of the detector. In order to visualize
@@ -555,12 +544,12 @@ class COSSpectrum(UVSpectrum):
         self.ccf = None
 
     # Compute the correct errors for the HST/COS observation
-    def compute_proper_error(self):
+    def compute_proper_error(self, shift_net=1E-7):
         """
         Compute the proper uncertainties of the HST/COS spectrum, following the
         method proposed by Wilson+ 2017 (ADS code = 2017A&A...599A..75W).
         """
-        self.sensitivity = self.flux / self.net / self.exp_time
+        self.sensitivity = self.flux / (self.net + shift_net) / self.exp_time
         self.error = (self.gross_counts + 1.0) ** 0.5 * self.sensitivity
 
     # Time tag split the observation
@@ -727,7 +716,8 @@ class COSSpectrum(UVSpectrum):
         self.split = []
         time_step = ((self.exp_time / n_splits) * u.s).to(u.d)
         for i in range(n_splits):
-            dataset_name = self.dataset_name + '_%i' % (i + 1)
+            offset = len(path)
+            dataset_name = split_list[i][offset:offset + 11]
             split_obs = COSSpectrum(dataset_name, prefix=path)
             split_obs.start_JD += i * time_step
             split_obs.end_JD -= time_step * (n_splits - i - 1)
@@ -1263,23 +1253,37 @@ class SpectralLine(object):
             self.f_unc[i] = np.copy(new_f_unc)
 
     # Plot the lines
-    def plot(self, velocity_space=True, x_range=None, **kwargs):
+    def plot(self, velocity_space=True, x_range=None, select_exposures=None,
+             uncertainties=False, **kwargs):
         """
 
         Returns:
 
         """
+        if select_exposures is None:
+            select_exposures = range(self.n_spectra)
+        else:
+            pass
+
         if velocity_space is True:
-            for i in range(self.n_spectra):
-                plt.plot(self.velocity[i], self.flux[i], **kwargs)
+            for i in select_exposures:
+                if uncertainties is False:
+                    plt.plot(self.velocity[i], self.flux[i], **kwargs)
+                else:
+                    plt.errorbar(self.velocity[i], self.flux[i],
+                                 yerr=self.f_unc[i], fmt='.', **kwargs)
             plt.xlabel(r'Velocity (km s$^{-1}$)')
             if x_range is None:
                 x_range = self.ds_range
             else:
                 pass
         else:
-            for i in range(self.n_spectra):
-                plt.plot(self.wavelength[i], self.flux[i], **kwargs)
+            for i in select_exposures:
+                if uncertainties is False:
+                    plt.plot(self.wavelength[i], self.flux[i], **kwargs)
+                else:
+                    plt.errorbar(self.wavelength[i], self.flux[i],
+                                 yerr=self.f_unc[i], fmt='.', **kwargs)
             plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
             plt.xticks(rotation=30)
             if x_range is None:
@@ -1306,23 +1310,24 @@ class SpectralLine(object):
             min_v = tools.nearest_index(self.velocity[i], velocity_range[0])
             max_v = tools.nearest_index(self.velocity[i], velocity_range[1])
             delta_wl = self.wavelength[i][1:] - self.wavelength[i][:-1]
-            int_flux = simps(self.flux[i][min_v:max_v],
-                             self.wavelength[i][min_v:max_v])
-            uncertainty = np.sqrt(np.sum((delta_wl[min_v:max_v] *
-                                          self.f_unc[i][min_v:max_v]) ** 2))
+            int_flux.append(simps(self.flux[i][min_v:max_v],
+                             self.wavelength[i][min_v:max_v]))
+            uncertainty.append(np.sqrt(np.sum((delta_wl[min_v:max_v] *
+                                          self.f_unc[i][min_v:max_v]) ** 2)))
 
         return int_flux, uncertainty
 
 
 # The Lyman-alpha profile class
-class LymanAlphaLine(SpectralLine):
+class ContaminatedLine(SpectralLine):
     """
 
     """
-    def __init__(self, cos_observation, airglow_template,
+    def __init__(self, cos_observation, airglow_template, central_wavelength,
                  doppler_shift_range=(-300 * u.km / u.s, 300 * u.km / u.s)):
-        super(LymanAlphaLine, self).__init__(cos_observation, 1215.6702,
-                                        doppler_shift_range=doppler_shift_range)
+        super(ContaminatedLine,
+              self).__init__(cos_observation, central_wavelength,
+                             doppler_shift_range=doppler_shift_range)
 
         # Check if the passed parameters are of correct type
         if isinstance(airglow_template, AirglowTemplate) is False:
@@ -1338,7 +1343,9 @@ class LymanAlphaLine(SpectralLine):
     # Fit airglow template to observed line within a specific range of the
     # spectrum
     def fit_template(self, velocity_range, shift_guess, scales_guess,
-                     fill_value=1E-18, shift_bounds=(None, None)):
+                     fill_value=1E-18, shift_bounds=(None, None),
+                     scale_bounds=(None, None), perform_mcmc=False,
+                     n_walkers=10, n_steps=500, proposal_scale=2.0):
         """
 
         Args:
@@ -1357,7 +1364,6 @@ class LymanAlphaLine(SpectralLine):
         # The badness of the fit function
         def _rank(params):
             badness = []
-
             # For each observation...
             for i in range(self.n_spectra):
 
@@ -1379,7 +1385,7 @@ class LymanAlphaLine(SpectralLine):
                 badness.append(np.sum(diff[min_v:max_v] * weight[min_v:max_v]))
 
             badness = np.array(badness)
-            return np.sum(badness)
+            return np.log10(np.sum(badness))
 
         # Perform the minimization of the badness of fit function
         guess = np.array([shift_guess] + scales_guess)
@@ -1387,7 +1393,7 @@ class LymanAlphaLine(SpectralLine):
         # Need to add bounds for each of the scale parameters, but all of them
         # are `None`
         for i in range(self.n_spectra):
-            bounds.append([None, None])
+            bounds.append(list(scale_bounds))
         result = minimize(_rank, x0=guess, method='TNC', bounds=bounds)
 
         # Compute the flux and uncertainties of the best fit clean line
@@ -1400,20 +1406,56 @@ class LymanAlphaLine(SpectralLine):
                                        bf_error, self.w0)
             bf_flux, bf_error = bf_templ.interpolate_to(self.wavelength[i])
             self.clean_flux.append(self.flux[i] - bf_flux)
-            temp = self.clean_flux[i] * ((self.f_unc[i] / self.flux[i]) ** 2 +
-                                         (bf_error / bf_flux) ** 2) ** 0.5
-            self.clean_f_unc.append(temp)
+            #temp = (self.clean_flux[i] ** 2 * ((self.f_unc[i] / self.flux[i]) ** 2 +
+            #                             (bf_error / bf_flux) ** 2)) ** 0.5
+            self.clean_f_unc.append((self.f_unc[i] ** 2 + bf_error ** 2) ** 0.5)
 
-        return result
+        # Prior for the wavelength shift
+        def _lnprior(params):
+            prior = 0.0
+            for i in range(len(bounds)):
+                if bounds[i][0] < params[i] < bounds[i][1]:
+                    prior += 0.0
+                else:
+                    prior += -np.inf
+            return prior
+
+        # The probability function
+        def _lnprob(params):
+            lp = _lnprior(params)
+            if not np.isfinite(lp):
+                return -np.inf
+            return lp - np.log(_rank(params))
+
+        # Perform MCMC to obtain the posteriors (useful to compute uncertainties
+        # of fit
+        if perform_mcmc is True:
+            n_dim = len(guess)
+            pos = [result['x'] + 1e-4 * np.random.randn(n_dim)
+                   for i in range(n_walkers)]
+            sampler = emcee.EnsembleSampler(n_walkers, n_dim, _lnprob)
+            sampler.run_mcmc(pos, n_steps)
+            return result, sampler
+        else:
+            return result
 
     # Plot the clean spectrum
     def plot_clean(self, velocity_space=True, x_range=None,
-                   select_exposures=None, **kwargs):
+                   select_exposures=None, uncertainties=False,
+                   scale_flux=1E-13, **kwargs):
         """
 
         Returns:
 
         """
+        if scale_flux is not None:
+            f_scale = 1.0 / scale_flux
+            log_scale = int(np.log10(scale_flux))
+            ylabel = r'Flux density (10$^{%i}$ erg s$^{-1}$ $\mathrm{\AA}^{-1}$ cm$^{-2}$)' % log_scale
+        else:
+            f_scale = 1.0
+            ylabel = r'Flux density (erg s$^{-1}$ $\mathrm{\AA}^{-1}$ cm$^{-2}$)'
+
         if select_exposures is None:
             select_exposures = range(self.n_spectra)
         else:
@@ -1421,7 +1463,11 @@ class LymanAlphaLine(SpectralLine):
 
         if velocity_space is True:
             for i in select_exposures:
-                plt.plot(self.velocity[i], self.clean_flux[i], **kwargs)
+                if uncertainties is False:
+                    plt.plot(self.velocity[i], self.clean_flux[i] * f_scale, **kwargs)
+                else:
+                    plt.errorbar(self.velocity[i], self.clean_flux[i] * f_scale,
+                                 yerr=self.clean_f_unc[i] * f_scale, fmt='.', **kwargs)
             plt.xlabel(r'Velocity (km s$^{-1}$)')
             if x_range is None:
                 x_range = self.ds_range
@@ -1429,7 +1475,11 @@ class LymanAlphaLine(SpectralLine):
                 pass
         else:
             for i in select_exposures:
-                plt.plot(self.wavelength[i], self.clean_flux[i], **kwargs)
+                if uncertainties is False:
+                    plt.plot(self.wavelength[i], self.clean_flux[i] * f_scale, **kwargs)
+                else:
+                    plt.errorbar(self.wavelength[i], self.clean_flux[i] * f_scale,
+                                 yerr=self.clean_f_unc[i] * f_scale, fmt='.', **kwargs)
             plt.xlabel(r'Wavelength ($\mathrm{\AA}$)')
             plt.xticks(rotation=30)
             if x_range is None:
@@ -1437,8 +1487,7 @@ class LymanAlphaLine(SpectralLine):
             else:
                 pass
         plt.xlim(x_range)
-        plt.ylabel(r'Flux (erg s$^{-1}$ $\mathrm{\AA}^{-1}$ cm$^{-2}$)')
-
+        plt.ylabel(ylabel)
 
     # Compute the integrated flux in the clean spectrum
     def integrated_clean_flux(self, velocity_range=(-100, 100)):
