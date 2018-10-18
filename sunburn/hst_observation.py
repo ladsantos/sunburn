@@ -70,8 +70,8 @@ class Visit(object):
                 else:
                     pass
             elif instrument == 'stis':
-                raise NotImplementedError('STIS instrument not implemented '
-                                          'yet.')
+                self.orbit[dataset_name[i]] = \
+                    STISSpectrum(dataset_name[i], prefix=prefix)
 
     # Plot all the spectra in a wavelength range
     def plot_spectra(self, wavelength_range=None, velocity_range=None,
@@ -145,29 +145,40 @@ class Visit(object):
                                     vf / ls * ref_wl + ref_wl)
 
             # Find which side of the chip corresponds to the wavelength range
-            ind = tools.pick_side(self.orbit[i].wavelength, wavelength_range)
+            # (only for COS)
+            if self.instrument == 'cos':
+                ind = tools.pick_side(self.orbit[i].wavelength, wavelength_range)
+                wavelength = self.orbit[i].wavelength[ind]
+                flux = self.orbit[i].flux[ind]
+                f_unc = self.orbit[i].error[ind]
+            # In the case of STIS, there is no need to pick a chip
+            else:
+                wavelength = self.orbit[i].wavelength
+                flux = self.orbit[i].flux
+                f_unc = self.orbit[i].error
+
             # Now find which spectrum indexes correspond to the requested
             # wavelength
-            min_wl = tools.nearest_index(self.orbit[i].wavelength[ind],
+            min_wl = tools.nearest_index(wavelength,
                                          wavelength_range[0] - wl_shift)
-            max_wl = tools.nearest_index(self.orbit[i].wavelength[ind],
+            max_wl = tools.nearest_index(wavelength,
                                          wavelength_range[1] - wl_shift)
 
             if velocity_space is True:
                 x_axis = \
-                    (self.orbit[i].wavelength[ind][min_wl:max_wl] + wl_shift -
+                    (wavelength[min_wl:max_wl] + wl_shift -
                      ref_wl) / ref_wl * c.c.to(u.km / u.s).value
                 x_label = r'Velocity (km s$^{-1}$)'
             else:
-                x_axis = self.orbit[i].wavelength[ind][min_wl:max_wl] + wl_shift
+                x_axis = wavelength[min_wl:max_wl] + wl_shift
                 x_label = r'Wavelength ($\mathrm{\AA}$)'
 
             if uncertainties is False:
-                plt.plot(x_axis, self.orbit[i].flux[ind][min_wl:max_wl],
-                         label=label, **mpl_kwargs)
+                plt.plot(x_axis, flux[min_wl:max_wl],  label=label,
+                         **mpl_kwargs)
             else:
-                plt.errorbar(x_axis, self.orbit[i].flux[ind][min_wl:max_wl],
-                             yerr=self.orbit[i].error[ind][min_wl:max_wl],
+                plt.errorbar(x_axis, flux[min_wl:max_wl],
+                             yerr=f_unc[min_wl:max_wl],
                              fmt='.', label=label, **mpl_kwargs)
         plt.xlabel(x_label)
         plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
@@ -245,10 +256,10 @@ class UVSpectrum(object):
     """
     def __init__(self, dataset_name, good_pixel_limits=None, units=None,
                  prefix=None):
+
+        # Instantiating global variables that are not instrument specific
         self.dataset_name = dataset_name
         self.x1d = dataset_name + '_x1d.fits'
-        self.corrtag_a = dataset_name + '_corrtag_a.fits'
-        self.corrtag_b = dataset_name + '_corrtag_b.fits'
         self.gpl = good_pixel_limits
 
         if units is None:
@@ -265,13 +276,7 @@ class UVSpectrum(object):
 
         # Read data from x1d file
         with fits.open(self.prefix + self.x1d) as f:
-            self.header = f[0].header
             self.data = f['SCI'].data
-
-        # Read some metadata from the corrtag file
-        with fits.open(self.prefix + self.corrtag_a) as f:
-            self.start_JD = Time(f[3].header['EXPSTRTJ'], format='jd')
-            self.end_JD = Time(f[3].header['EXPENDJ'], format='jd')
 
         # If ``good_pixel_limits`` is set to ``None``, then the data will be
         # retrieved from the file in its entirety. Otherwise, it will be
@@ -281,24 +286,13 @@ class UVSpectrum(object):
         else:
             pass
 
-        # Extract the most important information from the data
-        i00 = self.gpl[0][0]
-        i01 = self.gpl[0][1]
-        i10 = self.gpl[1][0]
-        i11 = self.gpl[1][1]
-        self.wavelength = np.array([self.data['WAVELENGTH'][0][i00:i01],
-                                    self.data['WAVELENGTH'][1][i10:i11]])
-        self.flux = np.array([self.data['FLUX'][0][i00:i01],
-                              self.data['FLUX'][1][i10:i11]])
-        self.error = np.array([self.data['ERROR'][0][i00:i01],
-                               self.data['ERROR'][1][i10:i11]])
-        self.gross_counts = np.array([self.data['GCOUNTS'][0][i00:i01],
-                                      self.data['GCOUNTS'][1][i10:i11]])
-        self.background = np.array([self.data['BACKGROUND'][0][i00:i01],
-                                    self.data['BACKGROUND'][1][i10:i11]])
-        self.net = np.array([self.data['NET'][0][i00:i01],
-                             self.data['NET'][1][i10:i11]])
-        self.exp_time = self.data['EXPTIME'][0]
+        # Instantiating the instrument-specific global variables
+        self.header = None
+        self.start_JD = None
+        self.end_JD = None
+        self.wavelength = None
+        self.flux = None
+        self.error = None
 
     # Compute the integrated flux in a given wavelength range
     def integrated_flux(self, wavelength_range=None, velocity_range=None,
@@ -536,6 +530,36 @@ class COSSpectrum(UVSpectrum):
                  good_pixel_limits=((1260, 15170), (1025, 15020)), prefix=None):
         super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits,
                                           prefix=prefix)
+
+        # COS-specific variables
+        self.corrtag_a = dataset_name + '_corrtag_a.fits'
+        self.corrtag_b = dataset_name + '_corrtag_b.fits'
+        with fits.open(self.prefix + self.x1d) as f:
+            self.header = f[0].header
+
+        # Read some metadata from the corrtag file
+        with fits.open(self.prefix + self.corrtag_a) as f:
+            self.start_JD = Time(f[3].header['EXPSTRTJ'], format='jd')
+            self.end_JD = Time(f[3].header['EXPENDJ'], format='jd')
+
+        # Extract the most important information from the data
+        i00 = self.gpl[0][0]
+        i01 = self.gpl[0][1]
+        i10 = self.gpl[1][0]
+        i11 = self.gpl[1][1]
+        self.wavelength = np.array([self.data['WAVELENGTH'][0][i00:i01],
+                                    self.data['WAVELENGTH'][1][i10:i11]])
+        self.flux = np.array([self.data['FLUX'][0][i00:i01],
+                              self.data['FLUX'][1][i10:i11]])
+        self.error = np.array([self.data['ERROR'][0][i00:i01],
+                               self.data['ERROR'][1][i10:i11]])
+        self.gross_counts = np.array([self.data['GCOUNTS'][0][i00:i01],
+                                      self.data['GCOUNTS'][1][i10:i11]])
+        self.background = np.array([self.data['BACKGROUND'][0][i00:i01],
+                                    self.data['BACKGROUND'][1][i10:i11]])
+        self.net = np.array([self.data['NET'][0][i00:i01],
+                             self.data['NET'][1][i10:i11]])
+        self.exp_time = self.data['EXPTIME'][0]
 
         # Instantiating useful global variables
         self.sensitivity = None
@@ -915,9 +939,25 @@ class STISSpectrum(UVSpectrum):
             For example, if the 1-d extracted spectrum file is named
             ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
     """
-    def __init__(self, dataset_name, data_folder=None):
-        super(STISSpectrum, self).__init__(dataset_name,
-                                           data_folder=data_folder)
+    def __init__(self, dataset_name, prefix=None):
+        super(STISSpectrum, self).__init__(dataset_name, prefix)
+
+        # STIS-specific variables
+        with fits.open(self.prefix + self.x1d) as f:
+            self.header = f[1].header
+
+        bjd_shift = 2400000.5
+        self.start_JD = Time(self.header['EXPSTART'] + bjd_shift,
+                             format='jd')
+        self.end_JD = Time(self.header['EXPEND'] + bjd_shift,
+                           format='jd')
+        self.wavelength = self.data['WAVELENGTH'][0]
+        self.flux = self.data['FLUX'][0]
+        self.error = self.data['ERROR'][0]
+        self.gross_counts = self.data['GROSS'][0]
+        self.background = self.data['BACKGROUND'][0]
+        self.net = self.data['NET'][0]
+        self.exp_time = self.header['EXPTIME']
 
 
 # The combined visit class
