@@ -258,6 +258,7 @@ class UVSpectrum(object):
                  prefix=None):
 
         # Instantiating global variables that are not instrument specific
+        self.instrument = None
         self.dataset_name = dataset_name
         self.x1d = dataset_name + '_x1d.fits'
         self.gpl = good_pixel_limits
@@ -321,37 +322,51 @@ class UVSpectrum(object):
         """
         ls = c.c.to(u.km / u.s)
         if wavelength_range is not None:
-            ind = tools.pick_side(self.wavelength, wavelength_range)
+            if self.instrument == 'cos':
+                ind = tools.pick_side(self.wavelength, wavelength_range)
+                wavelength = self.wavelength[ind]
+                flux = self.flux[ind]
+                f_unc = self.error[ind]
+            else:
+                wavelength = self.wavelength
+                flux = self.flux
+                f_unc = self.error
         else:
             assert(reference_wl is not None and velocity_range is not None,
                    'Reference wavelength and RV range must be provided '
                    'if you did not pick a wavelength range.')
             velocity_range += rv_correction
             wavelength_range = velocity_range * reference_wl / ls + reference_wl
-            print(wavelength_range)
-            ind = tools.pick_side(self.wavelength, wavelength_range)
+            if self.instrument == 'cos':
+                ind = tools.pick_side(self.wavelength, wavelength_range)
+                wavelength = self.wavelength[ind]
+                flux = self.flux[ind]
+                f_unc = self.error[ind]
+            else:
+                wavelength = self.wavelength
+                flux = self.flux
+                f_unc = self.error
 
-        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
-        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+        min_wl = tools.nearest_index(wavelength, wavelength_range[0])
+        max_wl = tools.nearest_index(wavelength, wavelength_range[1]) + 1
         # The following line is hacky, but it works
-        delta_wl = self.wavelength[ind][1:] - self.wavelength[ind][:-1]
-        int_flux = simps(self.flux[ind][min_wl:max_wl],
-                         x=self.wavelength[ind][min_wl:max_wl])
+        delta_wl = wavelength[1:] - wavelength[:-1]
+        int_flux = simps(flux[min_wl:max_wl], x=wavelength[min_wl:max_wl])
 
         # Compute the uncertainty of the integrated flux
         if uncertainty_method == 'quadratic_sum':
             uncertainty = np.sqrt(np.sum((delta_wl[min_wl:max_wl] *
-                                          self.error[ind][min_wl:max_wl]) ** 2))
+                                          f_unc[min_wl:max_wl]) ** 2))
         elif uncertainty_method == 'bootstrap':
             n_samples = 10000
             # Draw a sample of spectra and compute the fluxes for each
-            samples = np.random.normal(loc=self.flux[ind][min_wl:max_wl],
-                                       scale=self.error[ind][min_wl:max_wl],
+            samples = np.random.normal(loc=flux[min_wl:max_wl],
+                                       scale=f_unc[min_wl:max_wl],
                                        size=[n_samples, max_wl - min_wl])
             fluxes = []
             for i in range(n_samples):
                 fluxes.append(simps(samples[i],
-                                    x=self.wavelength[ind][min_wl:max_wl]))
+                                    x=wavelength[min_wl:max_wl]))
             fluxes = np.array(fluxes)
             uncertainty = np.std(fluxes)
         else:
@@ -391,27 +406,34 @@ class UVSpectrum(object):
                 spectra in Doppler velocity space.
         """
         if wavelength_range is not None:
-            ind = tools.pick_side(self.wavelength, wavelength_range)
-            min_wl = tools.nearest_index(self.wavelength[ind],
-                                         wavelength_range[0])
-            max_wl = tools.nearest_index(self.wavelength[ind],
-                                         wavelength_range[1])
+            if self.instrument == 'cos':
+                ind = tools.pick_side(self.wavelength, wavelength_range)
+                wavelength = self.wavelength[ind]
+                flux = self.flux[ind]
+                f_unc = self.error[ind]
+            else:
+                wavelength = self.wavelength
+                flux = self.flux
+                f_unc = self.error
+
+            min_wl = tools.nearest_index(wavelength, wavelength_range[0])
+            max_wl = tools.nearest_index(wavelength, wavelength_range[1])
 
             if isinstance(ref_wl, float):
                 x_axis = c.c.to(u.km / u.s).value * \
-                    (self.wavelength[ind][min_wl:max_wl] - ref_wl) / ref_wl
+                    (wavelength[min_wl:max_wl] - ref_wl) / ref_wl
                 x_label = r'Velocity (km s$^{-1}$)'
             else:
-                x_axis = self.wavelength[ind][min_wl:max_wl]
+                x_axis = wavelength[min_wl:max_wl]
                 x_label = r'Wavelength ($\mathrm{\AA}$)'
 
             # Finally plot it
             if plot_uncertainties is False:
-                plt.plot(x_axis, self.flux[ind][min_wl:max_wl],
+                plt.plot(x_axis, flux[min_wl:max_wl],
                          label=self.start_JD.value, **kwargs)
             else:
-                plt.errorbar(x_axis, self.flux[ind][min_wl:max_wl],
-                             yerr=self.error[ind][min_wl:max_wl],
+                plt.errorbar(x_axis, flux[min_wl:max_wl],
+                             yerr=f_unc[min_wl:max_wl],
                              fmt='.', label=self.start_JD.value, **kwargs)
             plt.xlabel(x_label)
             plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$ $\mathrm{\AA}^{-1}$)')
@@ -467,17 +489,23 @@ class UVSpectrum(object):
         # Find the Doppler velocities from line center
         light_speed = c.c.to(u.km / u.s).value
         if isinstance(line, spectroscopy.Line):
-            ind = tools.pick_side(self.wavelength, line.wavelength_range)
-            min_wl = tools.nearest_index(self.wavelength[ind],
-                                         line.wavelength_range[0])
-            max_wl = tools.nearest_index(self.wavelength[ind],
-                                         line.wavelength_range[1])
+            if self.instrument == 'cos':
+                ind = tools.pick_side(self.wavelength, line.wavelength_range)
+                wavelength = self.wavelength[ind]
+                flux = self.flux[ind]
+                f_unc = self.error[ind]
+            else:
+                wavelength = self.wavelength
+                flux = self.flux
+                f_unc = self.error
+
+            min_wl = tools.nearest_index(wavelength, line.wavelength_range[0])
+            max_wl = tools.nearest_index(wavelength, line.wavelength_range[1])
             doppler_v = \
-                (self.wavelength[ind][min_wl:max_wl] - line.central_wavelength)\
+                (wavelength[min_wl:max_wl] - line.central_wavelength)\
                 / line.central_wavelength * light_speed
-            flux = self.flux[ind][min_wl:max_wl]
-            unc = self.error[ind][min_wl:max_wl]
-            print(doppler_v)
+            flux = flux[min_wl:max_wl]
+            unc = f_unc[min_wl:max_wl]
 
         elif isinstance(line, list):
             pass
@@ -958,6 +986,7 @@ class STISSpectrum(UVSpectrum):
         self.background = self.data['BACKGROUND'][0]
         self.net = self.data['NET'][0]
         self.exp_time = self.header['EXPTIME']
+        self.split = None
 
 
 # The combined visit class
