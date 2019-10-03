@@ -5,4 +5,5 @@ astropy>=2.0.2
 astroquery>=0.3.7.dev4234
 astroplan
 costools
+stistools
 calcos

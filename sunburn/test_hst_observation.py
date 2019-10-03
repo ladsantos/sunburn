@@ -1,19 +1,18 @@
 import numpy as np
-import astropy.units as u
-
-from . import hst_observation
-from os.path import isdir, isfile
-from shutil import rmtree
+from . import hst_observation, spectroscopy
 
 datasets = ['ld9m10ujq', 'ld9m10uyq']
 visit1 = hst_observation.Visit(datasets, 'cos', prefix='data/')
-visit1.plot_spectra([1300, 1400])
 
-v_range = np.array([-50., 50.]) * u.km / u.s
-ref_wl = 1206.5
+line_list = spectroscopy.COSFUVLineList(wavelength_shift=.0,
+                                        range_factor=1.0).lines
 
-int_flux, uncertainty = \
-    visit1.orbit['ld9m10ujq'].integrated_flux(velocity_range=v_range,
-                                              reference_wl=ref_wl,
-                                              rv_correction=-20 * u.km / u.s)
-visit1.orbit['ld9m10ujq'].plot_spectrum(chip_index='red')
+tr = 'Si III'
+line = 0
+ref_wl = line_list[tr][line].central_wavelength
+
+shift = np.array([-23.623059845212502, -23.37932521889708])
+
+orbit_list = [visit1.orbit['ld9m10ujq'], visit1.orbit['ld9m10uyq']]
+test = hst_observation.CombinedSpectrum(
+    orbit_list, ref_wl, 'cos', velocity_range=[-100, 100], doppler_corr=shift)

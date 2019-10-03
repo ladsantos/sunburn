@@ -10,6 +10,7 @@ import astropy.constants as c
 from scipy.signal import correlate
 from scipy.optimize import curve_fit
 from scipy.interpolate import interp1d
+from scipy.stats import binned_statistic
 
 
 def nearest_index(array, target_value):
@@ -53,8 +54,9 @@ def pick_side(wavelength_array, wavelength_range):
             wavelength_range[1] < np.max(wavelength_array[1]):
         index = 1
     else:
-        raise ValueError('The requested wavelength range is not available '
-                         'in this spectrum.')
+        raise ValueError('The requested wavelength range (%i-%i) is not '
+                         'available in this spectrum.' % (wavelength_range[0],
+                                                          wavelength_range[1]))
 
     return index
 
@@ -194,3 +196,36 @@ def doppler_shift(velocity, ref_wl, wavelength, flux, uncertainty,
     new_flux = func0(old_wavelength)
     new_uncertainty = func1(old_wavelength)
     return new_flux, new_uncertainty
+
+
+# Bin a spectrum to a specific Doppler shift width
+def bin_spectrum(bin_width, wavelength, doppler_shift, flux, flux_uncertainty):
+    """
+
+    Args:
+        wavelength:
+        doppler_shift:
+        flux:
+        flux_uncertainty:
+
+    Returns:
+
+    """
+    bw = bin_width
+    wv = wavelength
+    ds = doppler_shift
+    f = flux
+    u = flux_uncertainty
+    v_bins = np.arange(min(ds), max(ds) + bw, bw)
+
+    binned_data, edges, inds = binned_statistic(ds, [wv, ds, f], bins=v_bins,
+                                                statistic='mean')
+    wv_bin = binned_data[0]
+    v_bin = binned_data[1]
+    f_bin = binned_data[2]
+    u_bin, edges, inds = binned_statistic(ds, u ** 2, bins=v_bins,
+                                          statistic='sum')
+    u_count, edges, inds = binned_statistic(ds, u ** 2, bins=v_bins,
+                                            statistic='count')
+    u_bin = u_bin ** 0.5 / u_count
+    return wv_bin, v_bin, f_bin, u_bin

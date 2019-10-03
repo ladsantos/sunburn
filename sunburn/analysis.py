@@ -60,7 +60,7 @@ class Transit(object):
     """
     def __init__(self, planet_name=None, period=None, transit_midpoint=None,
                  eccentricity=None, duration14=None, duration23=None,
-                 database='nasa'):
+                 batman_transit=None, database='nasa'):
         self.name = planet_name
         self.period = period
         self.transit_midpoint = transit_midpoint
@@ -68,6 +68,15 @@ class Transit(object):
         self.duration14 = duration14
         self.duration23 = duration23
         self.database = database
+        self.batman_params = batman_transit
+
+        # TODO: If the batman transit params are passed, then use them
+        #if self.batman_params is not None:
+        #    self.transit_midpoint = self.batman_params.t0
+        #    self.period = self.batman_params.per
+            # Compute the duration from batman parameters
+        #    impact_param = self.batman_params.a * \
+        #                   np.cos(self.batman_params.inc * u.deg) / self.batman_params.
 
         # If period or transit_center_time are not provided, look up the data
         # from a database
@@ -96,6 +105,9 @@ class Transit(object):
                 self.transit_midpoint = \
                     Time(self.planet_properties['TT'], format='jd')
                 self.duration14 = self.planet_properties['T14']
+
+        else:
+            pass
 
         self.system = EclipsingSystem(
             primary_eclipse_time=self.transit_midpoint,
@@ -368,9 +380,16 @@ class LightCurve(object):
                 i += 1
 
         # If the wavelength range is provided, just straight out compute the LC
-        if wavelength_range is not None:
-            n_lines = 1
+        if wavelength_range is not None and \
+                isinstance(wavelength_range, np.ndarray) is False:
+            n_bands = 1
             _integrate(wavelength_range)
+        # If the user provide a ``numpy.array`` with various bandpasses, combine
+        # their integrated fluxes
+        elif isinstance(wavelength_range, np.ndarray) is True:
+            n_bands = np.shape(wavelength_range)[0]
+            for band in wavelength_range:
+                _integrate(band)
         # If not, then the wavelength range has to be figured out from the given
         # transition, Doppler shift correction and velocity range
         else:
@@ -381,7 +400,7 @@ class LightCurve(object):
             # If the line_index us just a scalar, only one wavelength range will
             # be used
             if isinstance(line_index, int):
-                n_lines = 1
+                n_bands = 1
                 # Find the wavelength range
                 central_wl = \
                     self.line_list[transition][line_index].central_wavelength
@@ -394,7 +413,7 @@ class LightCurve(object):
             # If more than one line is requested, then the integrated fluxes
             # will be co-added line by line
             elif isinstance(line_index, list):
-                n_lines = len(line_index)
+                n_bands = len(line_index)
                 count = 0
                 for k in line_index:
                     # Find the wavelength range for the line
@@ -421,21 +440,24 @@ class LightCurve(object):
         self.tt_f_unc = np.array(self.tt_f_unc)
 
         # Co-add the integrated line fluxes if more than one was requested
-        if n_lines > 1:
-            temp = self.integrated_flux.reshape((n_lines, n_orbits))
+        if n_bands > 1:
+            temp = self.integrated_flux.reshape((n_bands, n_orbits))
             self.integrated_flux = np.sum(temp, axis=0)
-            temp = self.f_unc.reshape((n_lines, n_orbits))
+            temp = self.f_unc.reshape((n_bands, n_orbits))
             self.f_unc = np.sqrt(np.sum(temp ** 2, axis=0))
             temp = self.tt_integrated_flux.reshape(
-                (n_lines, len(self.tt_integrated_flux) // n_lines))
+                (n_bands, len(self.tt_integrated_flux) // n_bands))
             self.tt_integrated_flux = np.sum(temp, axis=0)
-            temp = self.tt_f_unc.reshape((n_lines, len(self.tt_f_unc) // n_lines))
+            temp = \
+                self.tt_f_unc.reshape((n_bands, len(self.tt_f_unc) // n_bands))
             self.tt_f_unc = np.sqrt(np.sum(temp ** 2, axis=0))
 
     # Plot the light curve
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
              label_choice='iso_date', symbol='o', symbol_color=None, fold=False,
-             plot_splits=True, norm_factor=None, **kwargs):
+             plot_splits=True, norm_factor=None, norm_uncertainty=0.0,
+             transit_lines=True, log_flux_scale=None, relative_phase=False,
+             **kwargs):
         """
         Plot the light curve. It is necessary to use
         ``matplotlib.pyplot.plot()`` after running this method to visualize the
@@ -466,6 +488,10 @@ class LightCurve(object):
                 Normalization factor to apply to light curve. If ``float``, then
                 assume the unit of the factor is erg / s / (cm ** 2). If
                 ``None``, then do not normalize. Default is ``None``.
+
+            transit_lines (``bool``, optional):
+                If ``True``, then plot vertical lines corresponding to the
+                ingress, egress and mid-transit times.
         """
         pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
         pylab.rcParams['font.size'] = axes_font_size
@@ -487,41 +513,66 @@ class LightCurve(object):
         else:
             norm = 1.0
 
+        if isinstance(log_flux_scale, int):
+            scale = 10 ** log_flux_scale
+            ylabel = r'Flux (10$^{%i}$ erg s$^{-1}$ cm$^{-2}$)' % log_flux_scale
+        else:
+            scale = 1.0
+            ylabel = r'Flux (erg s$^{-1}$ cm$^{-2}$)'
+
+        # Compute the correct values of the flux uncertainties taking into
+        # account the uncertainty of the normalization
+        f_plot = self.integrated_flux / norm / scale
+        unc_plot = f_plot * ((self.f_unc / self.integrated_flux) ** 2 +
+                             (norm_uncertainty / norm) ** 2) ** 0.5
+
         # Plot the integrated fluxes
         if fold is False:
-            plt.errorbar(self.time, self.integrated_flux / norm,
-                         xerr=self.t_span, yerr=self.f_unc / norm, fmt=symbol,
-                         label=label, color=symbol_color, **kwargs)
+            plt.errorbar(self.time, f_plot, xerr=self.t_span, yerr=unc_plot,
+                         fmt=symbol, label=label, color=symbol_color, **kwargs)
             plt.xlabel('Julian date')
         else:
             t_span_mod = (self.t_span * u.d).to(u.h).value
-            plt.errorbar(self.phase, self.integrated_flux / norm,
-                         xerr=t_span_mod, yerr=self.f_unc / norm, fmt=symbol,
-                         label=label, color=symbol_color, **kwargs)
-            plt.xlabel('Time (h)')
+            if relative_phase is True:
+                t_plot = self.phase / self.transit.period.to(u.h).value
+                xlabel = 'Phase'
+            else:
+                t_plot = self.phase
+                xlabel = 'Time (h)'
+            plt.errorbar(t_plot, f_plot, xerr=t_span_mod, yerr=unc_plot,
+                         fmt=symbol, label=label, color=symbol_color, **kwargs)
+            plt.xlabel(xlabel)
 
         if norm_factor is None:
-            plt.ylabel(r'Integrated flux (erg s$^{-1}$ cm$^{-2}$)')
+            plt.ylabel(ylabel)
         else:
-            plt.ylabel(r'Normalized integrated flux')
+            plt.ylabel(r'Normalized flux')
 
         # Plot the time-tag split data, if they are available
         if len(self.tt_integrated_flux) > 0 and plot_splits is True:
+            f_plot = self.tt_integrated_flux / norm / scale
+            unc_plot = f_plot * ((self.tt_f_unc / self.tt_integrated_flux) ** 2
+                                 + (norm_uncertainty / norm) ** 2) ** 0.5
             if fold is False:
-                plt.errorbar(self.tt_time, self.tt_integrated_flux / norm,
-                             xerr=self.tt_t_span, yerr=self.tt_f_unc / norm,
-                             fmt='.', color=symbol_color, alpha=0.2)
+                plt.errorbar(self.tt_time, f_plot, xerr=self.tt_t_span,
+                             yerr=unc_plot, fmt='.', color=symbol_color,
+                             alpha=0.2)
             else:
+                if relative_phase is True:
+                    t_plot = self.tt_phase / self.transit.period.to(u.h).value
+                else:
+                    t_plot = self.tt_phase
                 t_span_mod = (self.tt_t_span * u.d).to(u.h).value
-                plt.errorbar(self.tt_phase, self.tt_integrated_flux / norm,
-                             xerr=t_span_mod, yerr=self.tt_f_unc / norm,
-                             fmt='.', color=symbol_color, alpha=0.2)
+                plt.errorbar(t_plot, f_plot, xerr=t_span_mod,
+                             yerr=unc_plot, fmt='.', color=symbol_color,
+                             alpha=0.2)
 
         # Plot the transit times
-        if self.transit is not None and self.transit_midpoint is not None:
+        if self.transit is not None and self.transit_midpoint is not None and \
+                transit_lines is True:
             if fold is False:
                 for jd in self.transit_midpoint:
-                    plt.axvline(x=jd.jd, ls='--', color='k')
+                    #plt.axvline(x=jd.jd, ls='--', color='k')
                     plt.axvline(
                         x=jd.jd - self.transit.duration14.to(u.d).value / 2,
                         color='r')
@@ -536,7 +587,7 @@ class LightCurve(object):
                             x=jd.jd + self.transit.duration23.to(u.d).value / 2,
                             ls='-.', color='r')
             else:
-                plt.axvline(x=0.0, ls='--', color='k')
+                #plt.axvline(x=0.0, ls='--', color='k')
                 plt.axvline(x=-self.transit.duration14.to(u.h).value / 2,
                             color='r')
                 plt.axvline(x=self.transit.duration14.to(u.h).value / 2,
@@ -586,17 +637,27 @@ class CombinedLightCurve(object):
         self.integrated_flux /= self._counts
         self.f_unc = self.f_unc ** 0.5 / self._counts
         self.phase /= self._counts
+        self.xspan = np.array([[self.phase[i] - self.phase_bins[i],
+                                self.phase_bins[i + 1] - self.phase[i]]
+                               for i in range(self.n_p)]).T
 
     # Plot the combined light curve
-    def plot(self, norm=1, figure_sizes=(9.0, 6.5), axes_font_size=18,
-             label='', symbol=None, symbol_color=None, symbol_size=None,
-             **kwargs):
+    def plot(self, norm=1, norm_unc=0.0, figure_sizes=(9.0, 6.5),
+             axes_font_size=18, label='', symbol=None, symbol_color=None,
+             symbol_size=None, transit_lines=True, plot_xerr=True, **kwargs):
         """
 
         Args:
             norm:
+            norm_unc:
             figure_sizes:
             axes_font_size:
+            label:
+            symbol:
+            symbol_color:
+            symbol_size:
+            transit_lines:
+            **kwargs:
 
         Returns:
 
@@ -607,29 +668,38 @@ class CombinedLightCurve(object):
         if symbol is None:
             symbol = 'o'
 
-        plt.errorbar(self.phase, self.integrated_flux / norm,
-                     yerr=self.f_unc / norm, fmt=symbol, label=label,
-                     color=symbol_color, markersize=symbol_size, **kwargs)
+        f_plot = self.integrated_flux / norm
+        unc_plot = f_plot * ((self.f_unc / self.integrated_flux) ** 2 +
+                             (norm_unc / norm) ** 2) ** 0.5
+        if plot_xerr is True:
+            xerr_plot = self.xspan
+        else:
+            xerr_plot = None
+
+        plt.errorbar(self.phase, f_plot, yerr=unc_plot, xerr=xerr_plot,
+                     fmt=symbol, label=label, color=symbol_color,
+                     markersize=symbol_size, **kwargs)
 
         # Plot the transit lines
-        plt.axvline(x=0.0, ls='--', color='k')
-        plt.axvline(x=-self.transit.duration14.to(u.h).value / 2,
-                    color='r')
-        plt.axvline(x=self.transit.duration14.to(u.h).value / 2,
-                    color='r')
-        if self.transit.duration23 is not None:
-            plt.axvline(
-                x=-self.transit.duration23.to(u.h).value / 2,
-                ls='-.', color='r')
-            plt.axvline(
-                x=self.transit.duration23.to(u.h).value / 2,
-                ls='-.', color='r')
+        if transit_lines is True:
+            plt.axvline(x=0.0, ls='--', color='k')
+            plt.axvline(x=-self.transit.duration14.to(u.h).value / 2,
+                        color='r')
+            plt.axvline(x=self.transit.duration14.to(u.h).value / 2,
+                        color='r')
+            if self.transit.duration23 is not None:
+                plt.axvline(
+                    x=-self.transit.duration23.to(u.h).value / 2,
+                    ls='-.', color='r')
+                plt.axvline(
+                    x=self.transit.duration23.to(u.h).value / 2,
+                    ls='-.', color='r')
 
         # Plot axes labels
         if norm == 1:
-            plt.ylabel(r'Integrated flux (erg s$^{-1}$ cm$^{-2}$)')
+            plt.ylabel(r'Flux (erg s$^{-1}$ cm$^{-2}$)')
         else:
-            plt.ylabel(r'Normalized integrated flux')
+            plt.ylabel(r'Normalized flux')
         plt.xlabel('Time (h)')
 
 
