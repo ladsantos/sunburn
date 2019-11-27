@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import warnings
 from astropy.time import Time
+from astropy.io import fits
 from astroplan import EclipsingSystem
 from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive
 from astroquery.exoplanet_orbit_database import ExoplanetOrbitDatabase
@@ -703,10 +704,50 @@ class CombinedLightCurve(object):
         plt.xlabel('Time (h)')
 
 
-# Light curve object for a specific line
-class LineLightCurve(object):
+# Jitter class used to track down the systematics of the instrument
+class Jitter(object):
     """
 
     """
-    def __init__(self, spectral_lin):
+    def __init__(self, light_curve):
+
+        # Instantiate important variables
+        self.lc = light_curve
+        self.orbit_list = []
+        for o in self.lc.visit.orbit:
+            self.orbit_list.append(o)
+        self.orbit_list = np.array(self.orbit_list)
+        self.jitter_data = {}
+        self.columns = None
+        self._jp = []
+
+        # Check if there are time-tag split data in the visits
+        self._tt_present = None
+        if self.lc.tt_time is not None:
+            pass
+        else:
+            raise ValueError('There are no time-tag split exposures '
+                             'available in this light curve.')
+
+        # Retrieve the jitter information
+        for o in self.orbit_list:
+            prefix = self.lc.visit.prefix
+            with fits.open(prefix + '%s_jit.fits' % (o)) as jit_file:
+                self.jitter_data[o] = jit_file[1].data
+        self.columns = self.jitter_data[self.orbit_list[0]].columns
+        # Populating the list of jitter parameter names for convenience
+        for i in range(len(self.columns)):
+            self._jp.append(self.columns[i].name)
+        self._jp = np.array(self._jp)
+
+    # Plot the jitter parameters
+    def plot(self, param_name):
+        """
+
+        Args:
+            param_name:
+
+        Returns:
+
+        """
         pass

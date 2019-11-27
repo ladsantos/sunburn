@@ -24,7 +24,7 @@ from scipy.interpolate import interp1d
 from scipy.optimize import minimize
 from scipy.stats import binned_statistic
 from costools import splittag, x1dcorr
-from stistools import inttag, basic2d
+from stistools import inttag
 from calcos.x1d import concatenateSegments
 
 __all__ = ["Visit", "UVSpectrum", "COSSpectrum", "STISSpectrum",
