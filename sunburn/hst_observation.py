@@ -22,8 +22,9 @@ from . import tools, spectroscopy
 from scipy.integrate import simps
 from scipy.interpolate import interp1d
 from scipy.optimize import minimize
+from scipy.stats import binned_statistic
 from costools import splittag, x1dcorr
-from stistools import inttag
+from stistools import inttag, basic2d
 from calcos.x1d import concatenateSegments
 
 __all__ = ["Visit", "UVSpectrum", "COSSpectrum", "STISSpectrum",
@@ -212,7 +213,8 @@ class Visit(object):
             return x_axis_return, y_axis_return, y_err_return
 
     # Time-tag split the observations in the visit
-    def time_tag_split(self, n_splits, path_calibration_files, out_dir):
+    def time_tag_split(self, n_splits, path_calibration_files, out_dir,
+                       stis_high_res=None):
         """
 
         Args:
@@ -223,21 +225,16 @@ class Visit(object):
         Returns:
 
         """
-        if self.instrument == 'cos':
-            for dataset in self.orbit:
-                self.orbit[dataset].time_tag_split(
-                    n_splits, out_dir=out_dir,
-                    path_calibration_files=path_calibration_files)
+        for dataset in self.orbit:
+            self.orbit[dataset].time_tag_split(
+                n_splits, out_dir=out_dir,
+                path_calibration_files=path_calibration_files,
+                highres=stis_high_res)
+            if self.instrument == 'cos':
                 for i in range(n_splits):
                     self.orbit[dataset].split[i].compute_proper_error()
-
-        elif self.instrument == 'stis':
-            for dataset in self.orbit:
-                self.orbit[dataset].time_tag_split(
-                    n_splits, out_dir=out_dir,
-                    path_calibration_files=path_calibration_files)
-                for i in range(n_splits):
-                    self.orbit[dataset].split[i].compute_proper_error()
+            else:
+                pass
 
     # Assign previously computed splits to the visit
     def assign_splits(self, path):
@@ -246,16 +243,14 @@ class Visit(object):
         Args:
             path:
         """
-        if self.instrument != 'cos':
-            raise ValueError('Time-tag splitting is only available for COS.')
-        else:
-            pass
-
         for dataset in self.orbit:
             self.orbit[dataset].assign_splits(path)
             n_splits = len(self.orbit[dataset].split)
-            for i in range(n_splits):
-                self.orbit[dataset].split[i].compute_proper_error()
+            if self.instrument == 'cos':
+                for i in range(n_splits):
+                    self.orbit[dataset].split[i].compute_proper_error()
+            else:
+                pass
 
 
 # The general ultraviolet spectrum object
@@ -1048,6 +1043,94 @@ class STISSpectrum(UVSpectrum):
         self.net = self.data['NET'][0]
         self.exp_time = self.header['EXPTIME']
         self.split = None
+
+    # Time tag split the observation
+    def time_tag_split(self, n_splits=None, time_bins=None, out_dir="",
+                       highres=False,
+                       process_raw=True,
+                       path_calibration_files=None,
+                       clean_intermediate_steps=True):
+        """
+        HST calibration files can be downloaded from here:
+        https://hst-crds.stsci.edu
+
+        Args:
+            n_splits:
+            out_dir:
+            process_raw:
+            path_calibration_files:
+            clean_intermediate_steps:
+
+        Returns:
+
+        """
+        # First check if out_dir exists; if not, create it
+        if os.path.isdir(out_dir) is False:
+            os.mkdir(out_dir)
+        else:
+            pass
+
+        # Create the time_list string from time_bins if the user specified them,
+        # or from the number of splits the user requested
+        if isinstance(n_splits, int):
+            time_bins = np.linspace(0, self.exp_time, n_splits + 1)
+        else:
+            pass
+
+        if time_bins is not None:
+            time_list = ""
+            for time in time_bins:
+                time_list += str(time) + ', '
+
+            # Remove the last comma and space from the string
+            time_list = time_list[:-2]
+
+            # Add a forward slash to out_dir if it is not there
+            if out_dir[-1] != '/':
+                out_dir += '/'
+            else:
+                pass
+        else:
+            raise ValueError('Either `time_bins` or `n_splits` have to be '
+                             'provided.')
+
+        out_dir = self.prefix + out_dir
+
+        # Split-tag the observation
+        for i in range(len(time_bins) - 1):
+            start_time = time_bins[i]
+            increment = time_bins[i + 1] - start_time
+            inttag.inttag(
+                tagfile=self.prefix + self.dataset_name + '_tag.fits',
+                output=out_dir + self.dataset_name + '_%s_raw.fits' % str(i),
+                starttime=start_time, increment=increment, highres=highres)
+
+    def assign_splits(self, path):
+        """
+        If time-tag splits were computed previously, you should use this method
+        to assign the resulting split data to a ``COSSpeectrum`` object.
+
+        Args:
+            path:
+        """
+        # Add a trailing forward slash to path if it is not there
+        if path[-1] != '/':
+            path = path + '/'
+        else:
+            pass
+
+        # Find the number of splits
+        split_list = glob.glob(path + self.dataset_name + '_?_x1d.fits')
+        n_splits = len(split_list)
+
+        # Add each tag-split observation to the `self.split` object
+        self.split = []
+        time_step = ((self.exp_time / n_splits) * u.s).to(u.d)
+        for i in range(n_splits):
+            offset = len(path)
+            dataset_name = split_list[i][offset:offset + 11]
+            split_obs = STISSpectrum(dataset_name, prefix=path)
+            self.split.append(split_obs)
 
 
 # The combined visit class
