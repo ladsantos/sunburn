@@ -277,12 +277,13 @@ class UVSpectrum(object):
             the wavelength, flux and exposure time. Default is ``None``.
     """
     def __init__(self, dataset_name, good_pixel_limits=None, units=None,
-                 prefix=None):
+                 prefix=None, subexposure=False):
 
         # Instantiating global variables that are not instrument specific
         self.instrument = None
         self.dataset_name = dataset_name
         self.x1d = dataset_name + '_x1d.fits'
+        self.jit = dataset_name + '_jit.fits'
         self.gpl = good_pixel_limits
 
         if units is None:
@@ -309,10 +310,16 @@ class UVSpectrum(object):
         else:
             pass
 
-        # Read the jitter information
-        #with fits.open(self.prefix + dataset_name + '_jit.fits') as f:
-        #    self.ra_jitter = f[1].data['RA']
-        #    self.roll_jitter = f[1].data['ROLL']
+        # Read the jitter information (only valid for a full exposure and not
+        # subexposures)
+        if subexposure is False:
+            with fits.open(self.prefix + self.jit) as f:
+                self.jitter_data = f[1].data
+                self.jitter_columns = self.jitter_data.columns
+                self._jp = []
+                for i in range(len(self.jitter_columns)):
+                    self._jp.append(self.jitter_columns[i].name)
+                self._jp = np.array(self._jp)
 
         # Instantiating the instrument-specific global variables
         self.header = None
@@ -328,7 +335,7 @@ class UVSpectrum(object):
                         reference_wl=None, rv_correction=0.0,
                         uncertainty_method='quadratic_sum'):
         """
-        Compute the integrated flux of the COS spectrum in a user-defined
+        Compute the integrated flux of the spectrum in a user-defined
         wavelength range.
 
         Args:
@@ -607,9 +614,11 @@ class COSSpectrum(UVSpectrum):
             ``((1260, 15170), (1025, 15020))``.
     """
     def __init__(self, dataset_name,
-                 good_pixel_limits=((1260, 15170), (1025, 15020)), prefix=None):
+                 good_pixel_limits=((1260, 15170), (1025, 15020)), prefix=None,
+                 subexposure=False):
         super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits,
-                                          prefix=prefix)
+                                          prefix=prefix,
+                                          subexposure=subexposure)
 
         self.instrument = 'cos'
         # COS-specific variables
@@ -795,7 +804,8 @@ class COSSpectrum(UVSpectrum):
             time_step = ((self.exp_time / n_splits) * u.s).to(u.d)
             for i in range(n_splits):
                 dataset_name = self.dataset_name + '_%i' % (i + 1)
-                split_obs = COSSpectrum(dataset_name, prefix=out_dir)
+                split_obs = COSSpectrum(dataset_name, prefix=out_dir,
+                                        subexposure=True)
                 # Correct the start and end Julian Dates of the split data
                 split_obs.start_JD += i * time_step
                 split_obs.end_JD -= time_step * (n_splits - i - 1)
@@ -1022,8 +1032,9 @@ class STISSpectrum(UVSpectrum):
             For example, if the 1-d extracted spectrum file is named
             ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
     """
-    def __init__(self, dataset_name, prefix=None):
-        super(STISSpectrum, self).__init__(dataset_name, prefix=prefix)
+    def __init__(self, dataset_name, prefix=None, subexposure=False):
+        super(STISSpectrum, self).__init__(dataset_name, prefix=prefix,
+                                           subexposure=subexposure)
         self.instrument = 'stis'
 
         # STIS-specific variables
@@ -1129,7 +1140,8 @@ class STISSpectrum(UVSpectrum):
         for i in range(n_splits):
             offset = len(path)
             dataset_name = split_list[i][offset:offset + 11]
-            split_obs = STISSpectrum(dataset_name, prefix=path)
+            split_obs = STISSpectrum(dataset_name, prefix=path,
+                                     subexposure=True)
             self.split.append(split_obs)
 
 

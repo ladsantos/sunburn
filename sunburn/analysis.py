@@ -709,45 +709,90 @@ class Jitter(object):
     """
 
     """
-    def __init__(self, light_curve):
+    def __init__(self, orbit):
+        self.orbit = orbit
 
-        # Instantiate important variables
-        self.lc = light_curve
-        self.orbit_list = []
-        for o in self.lc.visit.orbit:
-            self.orbit_list.append(o)
-        self.orbit_list = np.array(self.orbit_list)
-        self.jitter_data = {}
-        self.columns = None
-        self._jp = []
+        # Instantiate useful variables
+        self.time = None
+        self.t_span = None
+        self.flux = None
+        self.uncertainty = None
 
-        # Check if there are time-tag split data in the visits
-        self._tt_present = None
-        if self.lc.tt_time is not None:
-            pass
+        # Check if there are time-tag split data in the orbit
+        if self.orbit.split is not None:
+            self.n_splits = len(self.orbit.split)
         else:
             raise ValueError('There are no time-tag split exposures '
                              'available in this light curve.')
 
-        # Retrieve the jitter information
-        for o in self.orbit_list:
-            prefix = self.lc.visit.prefix
-            with fits.open(prefix + '%s_jit.fits' % (o)) as jit_file:
-                self.jitter_data[o] = jit_file[1].data
-        self.columns = self.jitter_data[self.orbit_list[0]].columns
-        # Populating the list of jitter parameter names for convenience
-        for i in range(len(self.columns)):
-            self._jp.append(self.columns[i].name)
-        self._jp = np.array(self._jp)
+    # Compute the integrated flux in a given wavelength range in order to
+    # compare them with the jitter data
+    def compute_flux(self, wavelength_range=None, velocity_range=None,
+                     reference_wl=None, rv_correction=0.0):
+        self.time = []
+        self.t_span = []
+        self.flux = []
+        self.uncertainty = []
+
+        for i in range(self.n_splits):
+            # Compute the times of the split data in seconds
+            start_time = (
+                (self.orbit.split[i].start_JD.jd - self.orbit.start_JD.jd) * u.d
+            ).to(u.s).value
+            end_time = (
+                (self.orbit.split[i].end_JD.jd - self.orbit.start_JD.jd) * u.d
+            ).to(u.s).value
+            time = (end_time + start_time) / 2
+            self.time.append(time)
+            self.t_span.append(time - start_time)
+
+            # Finally integrate the spectrum in a specific wavelength range
+            int_flux, uncertainty = self.orbit.split[i].integrated_flux(
+                wavelength_range, velocity_range, reference_wl, rv_correction)
+            self.flux.append(int_flux)
+            self.uncertainty.append(uncertainty)
+
+        # Transform the lists into arrays
+        self.time = np.array(self.time)
+        self.t_span = np.array(self.t_span)
+        self.flux = np.array(self.flux)
+        self.uncertainty = np.array(self.uncertainty)
 
     # Plot the jitter parameters
-    def plot(self, param_name):
+    def plot(self, param_name, x_axis=None, plot_light_curve=False,
+             jitter_plot_options=None, light_curve_options=None):
         """
 
         Args:
             param_name:
+            x_axis:
+            plot_light_curve:
+            **kwargs:
 
         Returns:
 
         """
-        pass
+        ax1 = plt.subplot()
+        ax2 = ax1.twinx()
+
+        # The available options
+        if jitter_plot_options is None:
+            jitter_plot_options = {'color': 'C0', 'lw': 2, 'ls': '-'}
+        _jpo = jitter_plot_options
+        if light_curve_options is None:
+            light_curve_options = {'color': 'C1', 'marker': 'o'}
+        _lco = light_curve_options
+
+        if x_axis is None:
+            x_axis = 'Seconds'
+        x_axis = self.orbit.jitter_data[x_axis]
+        param = self.orbit.jitter_data[param_name]
+        ax1.plot(x_axis, param, color=_jpo['color'], lw=_jpo['lw'],
+                 ls=_jpo['ls'])
+
+        if plot_light_curve is True:
+            # First we need to figure out what are the elements of the visit
+            # that belong to the requested orbit.
+            ax2.errorbar(self.time, self.flux, xerr=self.t_span,
+                         yerr=self.uncertainty, fmt=_lco['marker'],
+                         color=_lco['color'])
