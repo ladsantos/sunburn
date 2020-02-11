@@ -14,7 +14,8 @@ import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import warnings
 from astropy.time import Time
-from astropy.io import fits
+from scipy.stats import binned_statistic, pearsonr
+from scipy.optimize import minimize
 from astroplan import EclipsingSystem
 from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive
 from astroquery.exoplanet_orbit_database import ExoplanetOrbitDatabase
@@ -61,23 +62,20 @@ class Transit(object):
     """
     def __init__(self, planet_name=None, period=None, transit_midpoint=None,
                  eccentricity=None, duration14=None, duration23=None,
-                 batman_transit=None, database='nasa'):
+                 semi_a=None, inclination=None, longitude_periastron=None,
+                 planet_radius=None, stellar_radius=None, database='nasa'):
         self.name = planet_name
         self.period = period
         self.transit_midpoint = transit_midpoint
         self.eccentricity = eccentricity
+        self.semi_a = semi_a
+        self.stellar_radius = stellar_radius
+        self.planet_radius = planet_radius
+        self.inclination = inclination
+        self.long_periastron = longitude_periastron
         self.duration14 = duration14
         self.duration23 = duration23
         self.database = database
-        self.batman_params = batman_transit
-
-        # TODO: If the batman transit params are passed, then use them
-        #if self.batman_params is not None:
-        #    self.transit_midpoint = self.batman_params.t0
-        #    self.period = self.batman_params.per
-            # Compute the duration from batman parameters
-        #    impact_param = self.batman_params.a * \
-        #                   np.cos(self.batman_params.inc * u.deg) / self.batman_params.
 
         # If period or transit_center_time are not provided, look up the data
         # from a database
@@ -216,8 +214,8 @@ class LightCurve(object):
                 for j in range(n_splits):
                     self.tt_time.append((orbit.split[j].start_JD.jd +
                                          orbit.split[j].end_JD.jd) / 2)
-                    self.tt_t_span.append((orbit.split[j].start_JD.jd -
-                                           orbit.split[j].end_JD.jd) / 2)
+                    self.tt_t_span.append((orbit.split[j].end_JD.jd -
+                                           orbit.split[j].start_JD.jd) / 2)
 
         # Figure out the range of julian dates spanned by the visit
         jd_start = np.array(jd_start)
@@ -247,7 +245,8 @@ class LightCurve(object):
                 self.phase = ((self.time - self.transit_midpoint.value) *
                               u.d).to(u.h).value
                 if self.tt_time is not None:
-                    self.tt_phase = ((self.tt_time - self.transit_midpoint.value) *
+                    self.tt_phase = ((self.tt_time -
+                                      self.transit_midpoint.value) *
                                      u.d).to(u.h).value
                     # Check if the phases are the best possible
                     for p in self.tt_phase:
@@ -277,6 +276,14 @@ class LightCurve(object):
                             ((self.tt_time[i] - self.transit_midpoint[ind].value) *
                              u.d).to(u.h).value)
                     self.tt_phase = np.array(self.tt_phase)
+                    # Check if the phases are the best possible
+                    for p in self.tt_phase:
+                        if p < -self.transit.period.to(u.h).value / 2:
+                            p += self.transit.period.to(u.h).value
+                        elif p > self.transit.period.to(u.h).value / 2:
+                            p -= self.transit.period.to(u.h).value
+                        else:
+                            pass
 
             # Check if phases are good
             for i in range(len(self.phase)):
@@ -287,35 +294,11 @@ class LightCurve(object):
                 else:
                     pass
 
-    # Systematic correction using a polynomial
-    def correct_systematic(self, reference_line_list, baseline_level,
-                           poly_deg=1, temp_jd_shift=2.45E6):
-        """
-        Correct the systematics of a HST/COS orbit by fitting a polynomial to
-        the sum of the integrated fluxes of various spectral lines (these lines
-        should preferably not have a transiting signal) for a series of time-tag
-        split data.
-
-        Args:
-
-            reference_line_list (`COSFUVLineList` object):
-
-            baseline_level ():
-
-            poly_deg (``int``, optional): Degree of the polynomial to be fit.
-                Default value is 1.
-
-            temp_jd_shift (``float``, optional): In order to perform a proper
-                fit, it is necessary to temporarily modify the Julian Date to a
-                smaller number, which is done by subtracting the value of this
-                variable from the Julian Dates. Default value is 2.45E6.
-        """
-        pass
-
     # Compute the integrated flux
     def compute_flux(self, velocity_range=None, transition=None,
                      line_index=None, doppler_shift_corr=0.0,
-                     wavelength_range=None, recompute_from_splits=False):
+                     wavelength_range=None, recompute_from_splits=False,
+                     detrend_factor_splits=None):
         """
         Compute the flux in a given wavelength range or for a line from the line
         list.
@@ -343,11 +326,12 @@ class LightCurve(object):
         light_speed = c.c.to(u.km / u.s).value
 
         # The local function to perform flux integration
-        def _integrate(wl_range):
+        def _integrate(wl_range, split_detrend_factor=None):
             """
 
             Args:
                 wl_range:
+                split_detrend_factor:
 
             Returns:
 
@@ -366,9 +350,14 @@ class LightCurve(object):
                     n_splits = len(orbit.split)
                     temp_int_f = 0
                     temp_f_unc = 0
-                    for i in range(n_splits):
-                        int_f, unc = orbit.split[i].integrated_flux(
+                    if split_detrend_factor is None:
+                        scale = np.ones(n_splits)
+                    else:
+                        scale = split_detrend_factor[i]
+                    for sk in range(n_splits):
+                        int_f, unc = orbit.split[sk].integrated_flux(
                             wl_range)
+                        int_f *= scale[sk]
                         temp_int_f += int_f
                         temp_f_unc += unc ** 2
                         self.tt_integrated_flux.append(int_f)
@@ -384,13 +373,13 @@ class LightCurve(object):
         if wavelength_range is not None and \
                 isinstance(wavelength_range, np.ndarray) is False:
             n_bands = 1
-            _integrate(wavelength_range)
+            _integrate(wavelength_range, detrend_factor_splits)
         # If the user provide a ``numpy.array`` with various bandpasses, combine
         # their integrated fluxes
         elif isinstance(wavelength_range, np.ndarray) is True:
             n_bands = np.shape(wavelength_range)[0]
             for band in wavelength_range:
-                _integrate(band)
+                _integrate(band, detrend_factor_splits)
         # If not, then the wavelength range has to be figured out from the given
         # transition, Doppler shift correction and velocity range
         else:
@@ -409,7 +398,7 @@ class LightCurve(object):
                 wavelength_range = ds_range / light_speed * central_wl + \
                     central_wl
                 # Compute the integrated flux for the line
-                _integrate(wavelength_range)
+                _integrate(wavelength_range, detrend_factor_splits)
 
             # If more than one line is requested, then the integrated fluxes
             # will be co-added line by line
@@ -428,7 +417,7 @@ class LightCurve(object):
                     wavelength_range = ds_range / light_speed * central_wl + \
                         central_wl
                     # Compute the integrated flux for the line
-                    _integrate(wavelength_range)
+                    _integrate(wavelength_range, detrend_factor_splits)
                     count += 1
 
             else:
@@ -527,11 +516,13 @@ class LightCurve(object):
         unc_plot = f_plot * ((self.f_unc / self.integrated_flux) ** 2 +
                              (norm_uncertainty / norm) ** 2) ** 0.5
 
+        ax = plt.subplot()
+
         # Plot the integrated fluxes
         if fold is False:
-            plt.errorbar(self.time, f_plot, xerr=self.t_span, yerr=unc_plot,
+            ax.errorbar(self.time, f_plot, xerr=self.t_span, yerr=unc_plot,
                          fmt=symbol, label=label, color=symbol_color, **kwargs)
-            plt.xlabel('Julian date')
+            ax.set_xlabel('Julian date')
         else:
             t_span_mod = (self.t_span * u.d).to(u.h).value
             if relative_phase is True:
@@ -540,14 +531,14 @@ class LightCurve(object):
             else:
                 t_plot = self.phase
                 xlabel = 'Time (h)'
-            plt.errorbar(t_plot, f_plot, xerr=t_span_mod, yerr=unc_plot,
+            ax.errorbar(t_plot, f_plot, xerr=t_span_mod, yerr=unc_plot,
                          fmt=symbol, label=label, color=symbol_color, **kwargs)
-            plt.xlabel(xlabel)
+            ax.set_xlabel(xlabel)
 
         if norm_factor is None:
-            plt.ylabel(ylabel)
+            ax.set_ylabel(ylabel)
         else:
-            plt.ylabel(r'Normalized flux')
+            ax.set_ylabel(r'Normalized flux')
 
         # Plot the time-tag split data, if they are available
         if len(self.tt_integrated_flux) > 0 and plot_splits is True:
@@ -555,7 +546,7 @@ class LightCurve(object):
             unc_plot = f_plot * ((self.tt_f_unc / self.tt_integrated_flux) ** 2
                                  + (norm_uncertainty / norm) ** 2) ** 0.5
             if fold is False:
-                plt.errorbar(self.tt_time, f_plot, xerr=self.tt_t_span,
+                ax.errorbar(self.tt_time, f_plot, xerr=self.tt_t_span,
                              yerr=unc_plot, fmt='.', color=symbol_color,
                              alpha=0.2)
             else:
@@ -564,7 +555,7 @@ class LightCurve(object):
                 else:
                     t_plot = self.tt_phase
                 t_span_mod = (self.tt_t_span * u.d).to(u.h).value
-                plt.errorbar(t_plot, f_plot, xerr=t_span_mod,
+                ax.errorbar(t_plot, f_plot, xerr=t_span_mod,
                              yerr=unc_plot, fmt='.', color=symbol_color,
                              alpha=0.2)
 
@@ -574,32 +565,34 @@ class LightCurve(object):
             if fold is False:
                 for jd in self.transit_midpoint:
                     #plt.axvline(x=jd.jd, ls='--', color='k')
-                    plt.axvline(
+                    ax.axvline(
                         x=jd.jd - self.transit.duration14.to(u.d).value / 2,
                         color='r')
-                    plt.axvline(
+                    ax.axvline(
                         x=jd.jd + self.transit.duration14.to(u.d).value / 2,
                         color='r')
                     if self.transit.duration23 is not None:
-                        plt.axvline(
+                        ax.axvline(
                             x=jd.jd - self.transit.duration23.to(u.d).value / 2,
                             ls='-.', color='r')
-                        plt.axvline(
+                        ax.axvline(
                             x=jd.jd + self.transit.duration23.to(u.d).value / 2,
                             ls='-.', color='r')
             else:
                 #plt.axvline(x=0.0, ls='--', color='k')
-                plt.axvline(x=-self.transit.duration14.to(u.h).value / 2,
+                ax.axvline(x=-self.transit.duration14.to(u.h).value / 2,
                             color='r')
-                plt.axvline(x=self.transit.duration14.to(u.h).value / 2,
+                ax.axvline(x=self.transit.duration14.to(u.h).value / 2,
                             color='r')
                 if self.transit.duration23 is not None:
-                    plt.axvline(
+                    ax.axvline(
                         x=-self.transit.duration23.to(u.h).value / 2,
                         ls='-.', color='r')
-                    plt.axvline(
+                    ax.axvline(
                         x=self.transit.duration23.to(u.h).value / 2,
                         ls='-.', color='r')
+
+        return ax
 
 
 # The co-added light curve object
@@ -703,96 +696,71 @@ class CombinedLightCurve(object):
             plt.ylabel(r'Normalized flux')
         plt.xlabel('Time (h)')
 
-
-# Jitter class used to track down the systematics of the instrument
-class Jitter(object):
-    """
-
-    """
-    def __init__(self, orbit):
-        self.orbit = orbit
-
-        # Instantiate useful variables
-        self.time = None
-        self.t_span = None
-        self.flux = None
-        self.uncertainty = None
-
-        # Check if there are time-tag split data in the orbit
-        if self.orbit.split is not None:
-            self.n_splits = len(self.orbit.split)
-        else:
-            raise ValueError('There are no time-tag split exposures '
-                             'available in this light curve.')
-
-    # Compute the integrated flux in a given wavelength range in order to
-    # compare them with the jitter data
-    def compute_flux(self, wavelength_range=None, velocity_range=None,
-                     reference_wl=None, rv_correction=0.0):
-        self.time = []
-        self.t_span = []
-        self.flux = []
-        self.uncertainty = []
-
-        for i in range(self.n_splits):
-            # Compute the times of the split data in seconds
-            start_time = (
-                (self.orbit.split[i].start_JD.jd - self.orbit.start_JD.jd) * u.d
-            ).to(u.s).value
-            end_time = (
-                (self.orbit.split[i].end_JD.jd - self.orbit.start_JD.jd) * u.d
-            ).to(u.s).value
-            time = (end_time + start_time) / 2
-            self.time.append(time)
-            self.t_span.append(time - start_time)
-
-            # Finally integrate the spectrum in a specific wavelength range
-            int_flux, uncertainty = self.orbit.split[i].integrated_flux(
-                wavelength_range, velocity_range, reference_wl, rv_correction)
-            self.flux.append(int_flux)
-            self.uncertainty.append(uncertainty)
-
-        # Transform the lists into arrays
-        self.time = np.array(self.time)
-        self.t_span = np.array(self.t_span)
-        self.flux = np.array(self.flux)
-        self.uncertainty = np.array(self.uncertainty)
-
-    # Plot the jitter parameters
-    def plot(self, param_name, x_axis=None, plot_light_curve=False,
-             jitter_plot_options=None, light_curve_options=None):
+'''
+    # Fit the data to a polynomial trend of the jitter parameters
+    def fit_trend(self, params, jitter_model=None, first_guess=None, norm=1E-16,
+                  **kwargs):
         """
 
         Args:
-            param_name:
-            x_axis:
-            plot_light_curve:
+            params:
+            jitter_model:
+            first_guess:
+            norm:
             **kwargs:
 
         Returns:
 
         """
-        ax1 = plt.subplot()
-        ax2 = ax1.twinx()
+        if first_guess is None:
+            first_guess = []
+            for p in params:
+                first_guess.append(1.0)
+                first_guess.append(1.0)
+            first_guess = np.array(first_guess)
+        else:
+            pass
 
-        # The available options
-        if jitter_plot_options is None:
-            jitter_plot_options = {'color': 'C0', 'lw': 2, 'ls': '-'}
-        _jpo = jitter_plot_options
-        if light_curve_options is None:
-            light_curve_options = {'color': 'C1', 'marker': 'o'}
-        _lco = light_curve_options
+        jitter_vector = []
+        for p in params:
+            jitter_vector.append(self.orbit.jitter_data[p])
+        jitter_vector = np.array(jitter_vector)
 
-        if x_axis is None:
-            x_axis = 'Seconds'
-        x_axis = self.orbit.jitter_data[x_axis]
-        param = self.orbit.jitter_data[param_name]
-        ax1.plot(x_axis, param, color=_jpo['color'], lw=_jpo['lw'],
-                 ls=_jpo['ls'])
+        # The jitter model is a linear function of the jitter data
+        def _model(jitter_matrix, p_matrix):
+            a = p_matrix[:, 0]
+            b = p_matrix[:, 1]
+            f_matrix = (a * jitter_matrix.T + b).T
+            f_value = np.sum(f_matrix, axis=0)
+            return f_value
 
-        if plot_light_curve is True:
-            # First we need to figure out what are the elements of the visit
-            # that belong to the requested orbit.
-            ax2.errorbar(self.time, self.flux, xerr=self.t_span,
-                         yerr=self.uncertainty, fmt=_lco['marker'],
-                         color=_lco['color'])
+        # Evaluate the model at the flux time stamps and calculate the
+        # log-likelihood
+        def _fun(theta):
+            p = np.reshape(theta, (len(theta) // 2, 2))
+            if jitter_model is None:
+                f_model = _model(jitter_vector, p)
+            else:
+                f_model = jitter_model(jitter_vector, p)
+            f_value = np.interp(self.time, self.orbit.jitter_data['Seconds'],
+                                f_model)
+            diff = self.flux / norm - f_value
+            return np.sum(diff ** 2 / (self.uncertainty / norm) ** 2)
+
+        # Fit the observed time-tag fluxes to the jitter model
+        result = minimize(_fun, x0=first_guess, **kwargs)
+        self.fit_result = result
+        if jitter_model is None:
+            self.trend = _model(jitter_vector, np.reshape(
+                result.x, (len(result.x) // 2, 2))) * norm
+        else:
+            self.trend = jitter_model(jitter_vector, np.reshape(
+                result.x, (len(result.x) // 2, 2))) * norm
+        return result
+
+    # Plot the trend
+    def plot_trend(self):
+        plt.plot(self.orbit.jitter_data['Seconds'], self.trend)
+        plt.errorbar(self.time, self.flux, xerr=self.t_span,
+                     yerr=self.uncertainty, fmt='o')
+'''

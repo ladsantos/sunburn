@@ -16,6 +16,8 @@ import os
 import glob
 import emcee
 
+
+from warnings import warn
 from astropy.io import fits
 from astropy.time import Time
 from . import tools, spectroscopy
@@ -64,6 +66,7 @@ class Visit(object):
         self.coadd_t_span = None
         self.n_orbit = len(dataset_name)
         self.prefix = prefix
+        self.dataset_names = dataset_name
 
         for i in range(len(dataset_name)):
             # Instantiate the orbit classes
@@ -277,13 +280,12 @@ class UVSpectrum(object):
             the wavelength, flux and exposure time. Default is ``None``.
     """
     def __init__(self, dataset_name, good_pixel_limits=None, units=None,
-                 prefix=None, subexposure=False):
+                 prefix=None):
 
         # Instantiating global variables that are not instrument specific
         self.instrument = None
         self.dataset_name = dataset_name
         self.x1d = dataset_name + '_x1d.fits'
-        self.jit = dataset_name + '_jit.fits'
         self.gpl = good_pixel_limits
 
         if units is None:
@@ -310,18 +312,8 @@ class UVSpectrum(object):
         else:
             pass
 
-        # Read the jitter information (only valid for a full exposure and not
-        # subexposures)
-        if subexposure is False:
-            with fits.open(self.prefix + self.jit) as f:
-                self.jitter_data = f[1].data
-                self.jitter_columns = self.jitter_data.columns
-                self._jp = []
-                for i in range(len(self.jitter_columns)):
-                    self._jp.append(self.jitter_columns[i].name)
-                self._jp = np.array(self._jp)
-
         # Instantiating the instrument-specific global variables
+        self.jit = None
         self.header = None
         self.start_JD = None
         self.end_JD = None
@@ -329,6 +321,7 @@ class UVSpectrum(object):
         self.flux = None
         self.error = None
         self.quality = None
+        self.slit_orientation = None
 
     # Compute the integrated flux in a given wavelength range
     def integrated_flux(self, wavelength_range=None, velocity_range=None,
@@ -617,8 +610,7 @@ class COSSpectrum(UVSpectrum):
                  good_pixel_limits=((1260, 15170), (1025, 15020)), prefix=None,
                  subexposure=False):
         super(COSSpectrum, self).__init__(dataset_name, good_pixel_limits,
-                                          prefix=prefix,
-                                          subexposure=subexposure)
+                                          prefix=prefix)
 
         self.instrument = 'cos'
         # COS-specific variables
@@ -652,6 +644,43 @@ class COSSpectrum(UVSpectrum):
         self.exp_time = self.data['EXPTIME'][0]
         self.quality = np.array([self.data['DQ'][0][i00:i01],
                                  self.data['DQ'][1][i10:i11]])
+        self.visit_id = self.header['ASN_TAB'][:9]
+
+        # Appending some important jitter information
+        self.jit = self.visit_id + '_jit.fits'
+        # Read the jitter information (only valid for a full exposure and not
+        # subexposures)
+        if subexposure is False:
+            try:
+                with fits.open(self.prefix + self.jit) as f:
+                    # We need to figure out which index inside the jit file
+                    # corresponds to this orbit
+                    orbits_list = np.array([f[k + 1].header['EXPNAME'][:8]
+                                            for k in range(len(f) - 1)])
+                    ind = np.where(orbits_list == self.dataset_name[:-1])[0][0]
+                    self.jitter_data = f[ind + 1].data
+                    self.jitter_columns = self.jitter_data.columns
+                    self._jp = []
+                    for i in range(len(self.jitter_columns)):
+                        self._jp.append(self.jitter_columns[i].name)
+                    self._jp = np.array(self._jp)
+            except OSError:
+                warn('Could not find the jitter file (%s_jit.fits).'
+                     % self.dataset_name)
+                self.jitter_data = None
+                self.jitter_columns = None
+
+        if subexposure is False:
+            latitude = self.jitter_data['Latitude']
+            longitude = self.jitter_data['Longitude']
+            sin_lat = np.sin(latitude * u.deg)
+            sin_long = np.sin(longitude * u.deg)
+            sin_lat_col = fits.Column('sin_Latitude', format='E', array=sin_lat)
+            sin_long_col = fits.Column('sin_Longitude', format='E',
+                                       array=sin_long)
+            self.jitter_columns = self.jitter_columns + \
+                sin_lat_col + sin_long_col
+            self.jitter_data = fits.FITS_rec.from_columns(self.jitter_columns)
 
         # Instantiating useful global variables
         self.sensitivity = None
@@ -835,7 +864,7 @@ class COSSpectrum(UVSpectrum):
         for i in range(n_splits):
             offset = len(path)
             dataset_name = split_list[i][offset:offset + 11]
-            split_obs = COSSpectrum(dataset_name, prefix=path)
+            split_obs = COSSpectrum(dataset_name, prefix=path, subexposure=True)
             split_obs.start_JD += i * time_step
             split_obs.end_JD -= time_step * (n_splits - i - 1)
             self.split.append(split_obs)
@@ -1033,8 +1062,7 @@ class STISSpectrum(UVSpectrum):
             ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
     """
     def __init__(self, dataset_name, prefix=None, subexposure=False):
-        super(STISSpectrum, self).__init__(dataset_name, prefix=prefix,
-                                           subexposure=subexposure)
+        super(STISSpectrum, self).__init__(dataset_name, prefix=prefix)
         self.instrument = 'stis'
 
         # STIS-specific variables
@@ -1053,7 +1081,58 @@ class STISSpectrum(UVSpectrum):
         self.background = self.data['BACKGROUND'][0]
         self.net = self.data['NET'][0]
         self.exp_time = self.header['EXPTIME']
+        self.slit_orientation = 45.35 * u.deg  # Angle between the slit and the
+        # reference HST angle V3 (~U3)
         self.split = None
+
+        # Appending some important jitter information
+        self.jit = dataset_name + '_jit.fits'
+        # Read the jitter information (only valid for a full exposure and not
+        # subexposures)
+        if subexposure is False:
+            try:
+                with fits.open(self.prefix + self.jit) as f:
+                    self.jitter_data = f[1].data
+                    self.jitter_columns = self.jitter_data.columns
+                    self._jp = []
+                    for i in range(len(self.jitter_columns)):
+                        self._jp.append(self.jitter_columns[i].name)
+                    self._jp = np.array(self._jp)
+            except OSError:
+                warn('Could not find the jitter file (%s_jit.fits).'
+                     % self.dataset_name)
+                self.jitter_data = None
+                self.jitter_columns = None
+
+        if subexposure is False:
+            theta = self.slit_orientation
+            v3_roll = self.jitter_data['V3_roll']
+            v2_roll = self.jitter_data['V2_roll']
+            v3_dom = self.jitter_data['V3_dom']
+            v2_dom = self.jitter_data['V2_dom']
+            latitude = self.jitter_data['Latitude']
+            longitude = self.jitter_data['Longitude']
+            sin_lat = np.sin(latitude * u.deg)
+            sin_long = np.sin(longitude * u.deg)
+            vd_roll = v3_roll * np.cos(theta) + v2_roll * np.sin(theta)
+            vs_roll = -v3_roll * np.sin(theta) + v2_roll * np.cos(theta)
+            vd_dom = v3_dom * np.cos(theta) + v2_dom * np.sin(theta)
+            vs_dom = -v3_dom * np.sin(theta) + v2_dom * np.cos(theta)
+            vd_roll_col = fits.Column('Vd_roll', format='E', unit='degrees',
+                                      array=vd_roll)
+            vs_roll_col = fits.Column('Vs_roll', format='E', unit='degrees',
+                                      array=vs_roll)
+            vd_dom_col = fits.Column('Vd_dom', format='E', unit='degrees',
+                                      array=vd_dom)
+            vs_dom_col = fits.Column('Vs_dom', format='E', unit='degrees',
+                                      array=vs_dom)
+            sin_lat_col = fits.Column('sin_Latitude', format='E', array=sin_lat)
+            sin_long_col = fits.Column('sin_Longitude', format='E',
+                                       array=sin_long)
+            self.jitter_columns = self.jitter_columns + vd_roll_col + \
+                vs_roll_col + vd_dom_col + vs_dom_col + sin_lat_col + \
+                sin_long_col
+            self.jitter_data = fits.FITS_rec.from_columns(self.jitter_columns)
 
     # Time tag split the observation
     def time_tag_split(self, n_splits=None, time_bins=None, out_dir="",
