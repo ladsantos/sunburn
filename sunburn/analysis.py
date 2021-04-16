@@ -13,15 +13,21 @@ import astropy.constants as c
 import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import warnings
+import emcee
 from astropy.time import Time
+from . import tools
+from multiprocessing import Pool
+from onza.Modules import instrument
 from scipy.stats import binned_statistic, pearsonr
 from scipy.optimize import minimize
+from astropy.modeling.functional_models import Lorentz1D
+from astropy.convolution import convolve
 from astroplan import EclipsingSystem
 from astroquery.nasa_exoplanet_archive import NasaExoplanetArchive
 from astroquery.exoplanet_orbit_database import ExoplanetOrbitDatabase
 
 
-__all__ = ["Transit", "LightCurve"]
+__all__ = ["Transit", "LightCurve", "ISM", "Reconstruction"]
 
 
 class Transit(object):
@@ -155,6 +161,31 @@ class Transit(object):
 
         return midtransit_times
 
+    # Calculate the nearest transit instead of the next one
+    def nearest_transit(self, jd_range):
+        """
+        Method to look for nearest transit event inside a Julian Date range.
+
+        Args:
+
+            jd_range (array-like): The Julian Date interval where to look up
+                for transit events.
+
+        Returns:
+
+            midtransit_times (``list``): List of Julian Dates of transit events.
+        """
+        next_t = self.next_transit(jd_range)[0]
+        previous_jd_range = (jd_range[0] - self.period.to(u.d).value,
+                             jd_range[1] - self.period.to(u.d).value)
+        previous_t = self.next_transit(previous_jd_range)[0]
+        center = (jd_range[0] + jd_range[1]) / 2
+        next_diff = next_t.jd - center
+        prev_diff = center - previous_t.jd
+        if next_diff > prev_diff:
+            return previous_t
+        else:
+            return next_t
 
 # The light curve object
 class LightCurve(object):
@@ -178,6 +209,7 @@ class LightCurve(object):
 
         # Instantiating useful global variables
         self._expand = transit_search_expansion
+        self._ind_sort = None  # Indices for sorting in phase space
         self.integrated_flux = None
         self.time = []
         self.t_span = []
@@ -185,6 +217,8 @@ class LightCurve(object):
         self.f_unc = None
 
         # Instantiate variables for tag-split data
+        self._tt_ind_sort = None  # Indices for sorting in phase space, but
+                                  # for time-tag subexposures
         self.tt_integrated_flux = None
         self.tt_time = None
         self.tt_phase = None
@@ -294,11 +328,23 @@ class LightCurve(object):
                 else:
                     pass
 
+            # Sort the phases and times according to phase
+            self._ind_sort = np.argsort(self.phase)
+            self.phase = self.phase[self._ind_sort]
+            self.time = self.time[self._ind_sort]
+            self.t_span = self.t_span[self._ind_sort]
+            if self.tt_phase is not None:
+                self._tt_ind_sort = np.argsort(self.tt_phase)
+                self.tt_phase = self.tt_phase[self._tt_ind_sort]
+                self.tt_time = self.tt_time[self._tt_ind_sort]
+                self.tt_t_span = self.tt_t_span[self._tt_ind_sort]
+
     # Compute the integrated flux
     def compute_flux(self, velocity_range=None, transition=None,
                      line_index=None, doppler_shift_corr=0.0,
                      wavelength_range=None, recompute_from_splits=False,
-                     detrend_factor_splits=None):
+                     detrend_factor_splits=None, poisson_regime=False,
+                     integrate_choice='flux'):
         """
         Compute the flux in a given wavelength range or for a line from the line
         list.
@@ -340,7 +386,13 @@ class LightCurve(object):
             i = 0
             for o in self.visit.orbit:
                 orbit = self.visit.orbit[o]
-                int_f, unc = orbit.integrated_flux(wl_range)
+                if poisson_regime is True:
+                    int_f, unc = orbit.integrated_flux(
+                        wl_range, uncertainty_method='poisson',
+                        integrate_choice=integrate_choice)
+                else:
+                    int_f, unc = orbit.integrated_flux(wl_range,
+                            integrate_choice=integrate_choice)
                 self.integrated_flux.append(int_f)
                 self.f_unc.append(unc)
 
@@ -355,8 +407,13 @@ class LightCurve(object):
                     else:
                         scale = split_detrend_factor[i]
                     for sk in range(n_splits):
-                        int_f, unc = orbit.split[sk].integrated_flux(
-                            wl_range)
+                        if poisson_regime is True:
+                            int_f, unc = orbit.split[sk].integrated_flux(
+                                wl_range, uncertainty_method='poisson',
+                                integrate_choice=integrate_choice)
+                        else:
+                            int_f, unc = orbit.split[sk].integrated_flux(
+                                wl_range, integrate_choice=integrate_choice)
                         int_f *= scale[sk]
                         temp_int_f += int_f
                         temp_f_unc += unc ** 2
@@ -397,6 +454,7 @@ class LightCurve(object):
                 ds_range = np.array(velocity_range) + doppler_shift_corr
                 wavelength_range = ds_range / light_speed * central_wl + \
                     central_wl
+
                 # Compute the integrated flux for the line
                 _integrate(wavelength_range, detrend_factor_splits)
 
@@ -441,6 +499,12 @@ class LightCurve(object):
             temp = \
                 self.tt_f_unc.reshape((n_bands, len(self.tt_f_unc) // n_bands))
             self.tt_f_unc = np.sqrt(np.sum(temp ** 2, axis=0))
+
+        # Sort the fluxes according to phases
+        self.integrated_flux = self.integrated_flux[self._ind_sort]
+        self.f_unc = self.f_unc[self._ind_sort]
+        self.tt_integrated_flux = self.tt_integrated_flux[self._tt_ind_sort]
+        self.tt_f_unc = self.tt_f_unc[self._tt_ind_sort]
 
     # Plot the light curve
     def plot(self, figure_sizes=(9.0, 6.5), axes_font_size=18,
@@ -696,71 +760,340 @@ class CombinedLightCurve(object):
             plt.ylabel(r'Normalized flux')
         plt.xlabel('Time (h)')
 
-'''
-    # Fit the data to a polynomial trend of the jitter parameters
-    def fit_trend(self, params, jitter_model=None, first_guess=None, norm=1E-16,
-                  **kwargs):
+
+# Interstellar medium class
+class ISM(object):
+    """
+
+    Args:
+        log_density:
+        temperature: Temperature in Kelvin
+        radial_velocity: Radial velocity in m / s
+        turbulence_velocity: Turbulence velocity in m / s
+    """
+    def __init__(self, log_density, temperature=8000,
+                 radial_velocity=0.01,
+                 turbulence_velocity=0.01):
+
+        # Initializing important numbers
+        self.light_speed = c.c.to(u.m / u.s).value
+        self.temperature = temperature
+        self.log_density = log_density
+        self.rv = radial_velocity
+        self.tv = turbulence_velocity
+
+        # Hard code here
+        # Lyman-alpha parameters
+        self.lya_params = {'mass_amu': 1.00849,
+                           'a_damp': 0.627E9,
+                           'w0': 1215.6702,
+                           'f_os': 0.416,
+                           'density_ratio': 1.0}
+        # Deuterium parameters
+        self.di_params = {'mass_amu': 2.0141017778,
+                          'a_damp': 0.627E9,
+                          'w0': 1215.3394,
+                          'f_os': 0.416,
+                          'density_ratio': 1E-5}
+
+    # Compute the absorption profile
+    def compute_absorption(self, line_params, wavelength):
         """
 
         Args:
-            params:
-            jitter_model:
-            first_guess:
-            norm:
-            **kwargs:
+            line_params:
+            wavelength:
+            doppler_velocity:
 
         Returns:
 
         """
-        if first_guess is None:
-            first_guess = []
-            for p in params:
-                first_guess.append(1.0)
-                first_guess.append(1.0)
-            first_guess = np.array(first_guess)
+        w0 = line_params['w0']
+        doppler_velocity = (wavelength - w0) / w0 * self.light_speed
+        opacity_ism = np.zeros(len(wavelength))
+        doppler_width = 128.95223 * (
+            (self.temperature / line_params['mass_amu']) +
+            ((self.tv / 0.129) ** 2)) ** 0.5
+        gamma = line_params['a_damp'] / (4 * np.pi)
+        a_voigt = gamma * line_params['w0'] * 1e-10 / doppler_width
+        u_line = (doppler_velocity - self.rv) / doppler_width
+
+        voigt_profile = tools.norm_voigt(a_voigt, u_line)
+        cross_section = (2.65e-6 * line_params['f_os'] / np.sqrt(np.pi)) * \
+            line_params['w0'] * 1e-10 * voigt_profile / doppler_width
+        opacity_ism += 10 ** (np.log10(cross_section) + self.log_density +
+                              np.log10(line_params['density_ratio']))
+        absorption = np.exp(-opacity_ism)
+        return absorption
+
+
+# Class to reconstruct lines partially absorbed by the interstellar medium
+class Reconstruction(object):
+    """
+
+    """
+    def __init__(self, observed_wavelength, observed_flux, observed_uncertainty,
+                 absorption_line_params, line_shape='gaussian', n_clouds=1,
+                 central_wavelength=1215.6702 * u.angstrom, sampling=999,
+                 instrumental_response=None):
+
+        self.shape = line_shape
+        self._ls = c.c.to(u.km / u.s)
+        self._w0 = central_wavelength
+        self.absorption_line_params = absorption_line_params
+        self.n_abs_lines = len(absorption_line_params)
+        self.n_clouds = n_clouds
+
+        # Setting up the instrumental response
+        if instrumental_response is not None:
+            self.instr_response = instrumental_response
         else:
-            pass
+            self.instr_response = instrument.HubbleSTIS(
+                0.001, config='STIS_HI_HD189_2011', wavelength_range=2.0)
+            self.instr_response.compute_kernel()
 
-        jitter_vector = []
-        for p in params:
-            jitter_vector.append(self.orbit.jitter_data[p])
-        jitter_vector = np.array(jitter_vector)
+        # If the user input data with units
+        try:
+            self.wavelength_data = observed_wavelength.to(u.angstrom).value
+            self.flux_data = \
+                observed_flux.to(u.erg / u.s / u.cm ** 2 / u.angstrom).value
+            self.uncertainty_data = \
+                observed_uncertainty.to(u.erg / u.s / u.cm ** 2 /
+                                        u.angstrom).value
+            self.velocity_data = \
+                (self.wavelength_data - self._w0) / self._w0 * self._ls.value
+        # If no units are used, assume the usual: angstrom for wavelength,
+        # km/s for velocity, erg/s/cm**2/angstrom for flux density
+        except AttributeError:
+            self.wavelength_data = observed_wavelength
+            self.flux_data = observed_flux
+            self.uncertainty_data = observed_uncertainty
+            self.velocity_data = \
+                (self.wavelength_data - self._w0.value) / \
+                self._w0.value * self._ls.value
 
-        # The jitter model is a linear function of the jitter data
-        def _model(jitter_matrix, p_matrix):
-            a = p_matrix[:, 0]
-            b = p_matrix[:, 1]
-            f_matrix = (a * jitter_matrix.T + b).T
-            f_value = np.sum(f_matrix, axis=0)
-            return f_value
+        # Now we instantiate high-resolution grids for wavelength and velocity
+        self.wavelength = np.linspace(self.wavelength_data[0],
+                                      self.wavelength_data[-1], sampling)
+        self.velocity = (self.wavelength - self._w0.value) / \
+            self._w0.value * self._ls.value
 
-        # Evaluate the model at the flux time stamps and calculate the
-        # log-likelihood
-        def _fun(theta):
-            p = np.reshape(theta, (len(theta) // 2, 2))
-            if jitter_model is None:
-                f_model = _model(jitter_vector, p)
+        # Instantiating other useful variables
+        self._n_ism_params = 4 * self.n_abs_lines * self.n_clouds
+        if self.shape == 'gaussian' or self.shape == 'Gaussian' or \
+                self.shape == 'lorentz' or self.shape == 'lorentzian':
+            self._n_intrinsic_params = 3
+        elif self.shape == 'self_abs_gaussian' or \
+                self.shape == 'gaussian_self_abs':
+            self._n_intrinsic_params = 5
+        elif self.shape == 'double_gaussian':
+            self._n_intrinsic_params = 6
+        else:
+            raise ValueError('This shape of intrinsic emission line is not '
+                             'implemented.')
+        self.best_solution = None
+        self.emcee_sampler = None
+        self.samples = None
+        self.autocorr_time = None
+
+    def intrinsic_model(self, params):
+        """
+
+        Args:
+            params:
+
+        Returns:
+
+        """
+        if self.shape == 'gaussian' or self.shape == 'Gaussian':
+            amplitude, v_shift, width = params
+            central_wavelength = v_shift / self._ls.value * self._w0.value + \
+                self._w0.value
+            return tools.gaussian(self.wavelength, central_wavelength,
+                                  amplitude, width)
+
+        elif self.shape == 'double_gaussian':
+            a_1, v_1, w_1, a_2, v_2, w_2 = params
+            w0_1 = v_1 / self._ls.value * self._w0.value + self._w0.value
+            w0_2 = v_2 / self._ls.value * self._w0.value + self._w0.value
+            g_1 = tools.gaussian(self.wavelength, a_1, w0_1, w_1)
+            g_2 = tools.gaussian(self.wavelength, a_2, w0_2, w_2)
+            return g_1 + g_2
+
+        elif self.shape == 'gaussian_self_abs' or \
+                self.shape == 'self_abs_gaussian':
+            amplitude_1, width_1, amplitude_2, width_2, v_shift = params
+            central_wavelength = v_shift / self._ls.value * self._w0.value + \
+                                 self._w0.value
+            gaussian_1 = tools.gaussian(self.wavelength, amplitude_1,
+                                  central_wavelength, width_1)
+            gaussian_2 = tools.gaussian(self.wavelength, amplitude_2,
+                                        central_wavelength, width_2)
+            return gaussian_1 - gaussian_2
+
+        elif self.shape == 'lorentzian' or self.shape == 'lorentz':
+            amplitude, v_shift, width = params
+            central_wavelength = v_shift / self._ls.value * self._w0.value + \
+                self._w0.value
+            f = Lorentz1D(amplitude, central_wavelength, width)
+            return f(self.wavelength)
+
+        else:
+            raise ValueError('This shape of intrinsic emission line is not '
+                             'implemented.')
+
+    def make_observable(self, intrinsic_params, ism_params):
+        """
+
+        Returns:
+
+        """
+        # Compute the intrinsic flux
+        intrinsic_flux = self.intrinsic_model(intrinsic_params)
+
+        # Now for the ISM
+        ism_absorption = np.ones(np.shape(self.wavelength))
+        for i in range(self.n_clouds):
+            eta, temp, rv, tv = ism_params[i * 4:(i + 1) * 4]
+            ism_model = ISM(eta, temp, rv, tv)
+            for j in range(self.n_abs_lines):
+                temp_absorption = ism_model.compute_absorption(
+                    self.absorption_line_params[j], self.wavelength)
+                ism_absorption *= temp_absorption
+
+        # Now we finally compute the observable line
+        observable_model = intrinsic_flux * ism_absorption
+
+        # Convolution with the instrumental LSF. Spectrum has constant
+        # resolution; kernel has its own resolution and sampling (which has to
+        # be finer than the spectrum's resolution), thus it needs to be
+        # interpolated to the spectrum resolution before convolution.
+        if self.instr_response.response_mode == 'LSF':
+            kernel_interp = np.interp(self.wavelength,
+                                      self.instr_response.wavelength +
+                                      self._w0.value,
+                                      self.instr_response.kernel)
+            observable_model = convolve(observable_model, kernel_interp,
+                                        boundary='extend')
+
+        else:
+            raise NotImplementedError("Instrumental response modes other than "
+                                      "'LSF' are not implemented yet.")
+
+        return observable_model
+
+    def fit_observable(self, first_guess, method='TNC', flux_scale=1E-13,
+                       mask_range=None, method_options=None, flat_priors=None):
+        """
+
+        Args:
+            first_guess:
+            method:
+            flux_scale:
+            mask_range:
+            method_options:
+
+        Returns:
+
+        """
+        # The log-likelihood function
+        def _log_likelihood(theta, x, y, yerr, mask_range=None):
+            # Apply the flat priors
+            if flat_priors is not None:
+                for i in range(len(theta)):
+                    if flat_priors[i, 0] is not None and flat_priors[i, 1] is not None:
+                        if flat_priors[i, 0] < theta[i] < flat_priors[i, 1]:
+                            return np.inf
+                        else:
+                            pass
+                    else:
+                        pass
             else:
-                f_model = jitter_model(jitter_vector, p)
-            f_value = np.interp(self.time, self.orbit.jitter_data['Seconds'],
-                                f_model)
-            diff = self.flux / norm - f_value
-            return np.sum(diff ** 2 / (self.uncertainty / norm) ** 2)
+                pass
 
-        # Fit the observed time-tag fluxes to the jitter model
-        result = minimize(_fun, x0=first_guess, **kwargs)
-        self.fit_result = result
-        if jitter_model is None:
-            self.trend = _model(jitter_vector, np.reshape(
-                result.x, (len(result.x) // 2, 2))) * norm
+            # Make the observable model
+            intrinsic_params = theta[:self._n_intrinsic_params]
+            ism_params = theta[self._n_intrinsic_params:]
+
+            # # Prior: the turbulence velocity and temperature have to be positive
+            # # and not absurdly large
+            # if ism_params[-1] < 0 or ism_params[-1] > 100 or ism_params[1] < 0 \
+            #         or ism_params[1] > 1E5:
+            #     return np.inf
+            # # Prior: the eta cannot be unreasonable
+            # elif ism_params[0] < 0 or ism_params[0] > 30:
+            #     return np.inf
+            # else:
+            #     pass
+            #
+            # # Priors for the intrinsic profiles
+            # # Amplitudes and widths cannot be unreasonable
+            # if self.shape == 'gaussian' or self.shape == 'Gaussian' or \
+            #     self.shape == 'lorentzian' or self.shape == 'lorentz':
+            #     if intrinsic_params[0] < 0 or intrinsic_params[2] < 0 or intrinsic_params[2] > 10:
+            #         return np.inf
+            #     else:
+            #         pass
+            # elif self.shape == 'double_gaussian':
+            #     if intrinsic_params[0] < 0 or intrinsic_params[2] < 0 or \
+            #             intrinsic_params[3] < 0 or intrinsic_params[4] < 0:
+            #         return np.inf
+            #     else:
+            #         pass
+            # elif self.shape == 'self_abs_gaussian':
+            #     if intrinsic_params[0] < 0 or intrinsic_params[1] < 0 or \
+            #             intrinsic_params[2] < 0 or intrinsic_params[3] < 0:
+            #         return np.inf
+            #     else:
+            #         pass
+
+            model = self.make_observable(intrinsic_params, ism_params)
+
+            # Interpolate it to the observed wavelength
+            interp_model = np.interp(x, self.wavelength, model)
+
+            # Finally calculate the log-likelihood
+            sigma2 = (yerr / flux_scale) ** 2
+            ll = 0.5 * ((y / flux_scale - interp_model) ** 2 / sigma2 +
+                                np.log(sigma2))
+
+            if mask_range is None:
+                pass
+            else:
+                i0 = tools.nearest_index(self.velocity_data, mask_range[0])
+                i1 = tools.nearest_index(self.velocity_data, mask_range[1])
+                ll[i0:i1 + 1] = np.zeros(len(ll[i0:i1 + 1]))
+
+            return np.sum(ll)
+
+        def _log_probability(theta, x, y, yerr, mask):
+            return -_log_likelihood(theta, x, y, yerr, mask)
+
+        # Perform the minimization
+        if method is not 'mcmc':
+            best_solution = minimize(_log_likelihood, first_guess, args=(
+                self.wavelength_data, self.flux_data, self.uncertainty_data,
+                mask_range), method=method, options=method_options)
+            self.best_solution = best_solution
+
+        # If the method chosen was 'mcmc', perform it separately
         else:
-            self.trend = jitter_model(jitter_vector, np.reshape(
-                result.x, (len(result.x) // 2, 2))) * norm
-        return result
-
-    # Plot the trend
-    def plot_trend(self):
-        plt.plot(self.orbit.jitter_data['Seconds'], self.trend)
-        plt.errorbar(self.time, self.flux, xerr=self.t_span,
-                     yerr=self.uncertainty, fmt='o')
-'''
+            n_dim = len(first_guess)
+            if method_options is not None:
+                n_walkers = method_options['n_walkers']
+                n_steps = method_options['n_steps']
+            else:
+                n_walkers = 20
+                n_steps = 10000
+            pos = np.array(first_guess) + 1E-4 * np.random.randn(
+                n_walkers, n_dim)
+            sampler = emcee.EnsembleSampler(
+                n_walkers, n_dim, _log_probability,
+                args=(self.wavelength_data, self.flux_data,
+                      self.uncertainty_data, mask_range))
+            sampler.run_mcmc(pos, n_steps, progress=True)
+            self.emcee_sampler = sampler
+            samples = sampler.get_chain(flat=True)
+            self.samples = samples
+            tau = sampler.get_autocorr_time()
+            self.autocorr_time = tau
