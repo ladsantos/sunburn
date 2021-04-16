@@ -7,10 +7,12 @@ Various general tools used by the code.
 import numpy as np
 import astropy.units as u
 import astropy.constants as c
+from astropy.stats import poisson_conf_interval
 from scipy.signal import correlate
-from scipy.optimize import curve_fit
+from scipy.optimize import curve_fit, minimize
 from scipy.interpolate import interp1d
 from scipy.stats import binned_statistic
+from scipy.special import wofz
 
 
 def nearest_index(array, target_value):
@@ -131,7 +133,16 @@ def cross_correlate(line, spectrum, wavelength_span=1 * u.angstrom,
     return d_shift, ccf, coeff
 
 
-def fit_gaussian(x, y, x_0, fwhm_0, amplitude_0):
+def gaussian(x, center, width, amplitude=None):
+    if amplitude is not None:
+        return amplitude * np.exp(-(x - center) ** 2 / (2 * width ** 2))
+    else:  # Return a normalized Gaussian
+        term_1 = 1 / width / (2 * np.pi) ** 0.5
+        term_2 = np.exp(-0.5 * ((x - center) / width) ** 2)
+        return term_1 * term_2
+
+
+def fit_gaussian(x, y, x_0, fwhm_0, amplitude_0, yerr=None):
     """
     Fit a Gaussian to the (x, y) curve, using as a first guess the values of the
     Gaussian center `x_0`, the `fwhm_0` and `amplitude_0`.
@@ -150,16 +161,25 @@ def fit_gaussian(x, y, x_0, fwhm_0, amplitude_0):
 
     """
     # The function that defines a Gaussian
-    def gaussian(xs, *p):
+    def local_gaussian(xs, p):
         mu, sigma, ampl = p
-        return ampl * np.exp(-(xs - mu) ** 2 / (2 * sigma ** 2))
+        return gaussian(xs, mu, sigma, ampl)
+
+    def chisq(theta, x_obs, y_obs, err_obs):
+        model = local_gaussian(x_obs, theta)
+        return np.sum((y_obs - model) ** 2 / err_obs ** 2)
 
     # The initial guess
-    p0 = [x_0, fwhm_0, amplitude_0]
+    p0 = np.array([x_0, fwhm_0, amplitude_0])
 
     # Perform the fit
-    coeff, var = curve_fit(gaussian, x, y, p0=p0)
-    return coeff
+    if yerr is None:
+        coeff, var = curve_fit(gaussian, x, y, p0=p0)
+        return coeff, var
+        #coeff, var = curve_fit(local_gaussian, x, y, p0=p0)
+    else:
+        solution = minimize(chisq, x0=p0, args=(x, y, yerr))
+        return solution
 
 
 # Apply Doppler shift to a spectrum
@@ -199,7 +219,8 @@ def doppler_shift(velocity, ref_wl, wavelength, flux, uncertainty,
 
 
 # Bin a spectrum to a specific Doppler shift width
-def bin_spectrum(bin_width, wavelength, doppler_shift, flux, flux_uncertainty):
+def bin_spectrum(bin_width, wavelength, doppler_shift, flux, flux_uncertainty,
+                 final_uncertainty='combine'):
     """
 
     Args:
@@ -223,9 +244,84 @@ def bin_spectrum(bin_width, wavelength, doppler_shift, flux, flux_uncertainty):
     wv_bin = binned_data[0]
     v_bin = binned_data[1]
     f_bin = binned_data[2]
-    u_bin, edges, inds = binned_statistic(ds, u ** 2, bins=v_bins,
-                                          statistic='sum')
-    u_count, edges, inds = binned_statistic(ds, u ** 2, bins=v_bins,
-                                            statistic='count')
-    u_bin = u_bin ** 0.5 / u_count
+
+    # Combine uncertainties assuming Gaussian regime
+    if final_uncertainty == 'combine':
+        u_bin, edges, inds = binned_statistic(ds, u ** 2, bins=v_bins,
+                                              statistic='sum')
+        u_count, edges, inds = binned_statistic(ds, u ** 2, bins=v_bins,
+                                                statistic='count')
+        u_bin = u_bin ** 0.5 / u_count ** 0.5
+    elif final_uncertainty == 'poisson':
+        confidence_interval = poisson_conf_interval(f_bin)
+        u_bin = np.mean(confidence_interval, axis=0)
+    else:
+        raise ValueError('This final uncertainty type is not implemented.')
+
     return wv_bin, v_bin, f_bin, u_bin
+
+
+# Combine several spectra
+def combine_spectra(wavelength_list, flux_list, uncertainty_list,
+                    ref_wavelength=None, wavelength_grid=None):
+    """
+
+    Args:
+        wavelength_list:
+        flux_list:
+        uncertainty_list:
+        ref_wavelength:
+        wavelength_grid:
+
+    Returns:
+
+    """
+    n_spectra = len(wavelength_list)
+
+    # If the wavelength grid is not provided, just use the one from the first
+    # spectrum
+    if wavelength_grid is None:
+        wavelength = wavelength_list[0]
+    else:
+        wavelength = wavelength_grid
+
+    flux = []
+    f_unc = []
+    for i in range(n_spectra):
+        # First interpolate the spectrum to the wavelength grid
+        ff = interp1d(wavelength_list[i], flux_list[i], kind='linear',
+                      bounds_error=False, fill_value=1E-18)
+        fu = interp1d(wavelength_list[i], uncertainty_list[i], kind='linear',
+                      bounds_error=False, fill_value=1E-18)
+
+        # Add them to the lists of interpolated arrays
+        flux.append(ff(wavelength))
+        f_unc.append(fu(wavelength))
+
+    wavelength = np.array(wavelength)
+    flux = np.mean(np.array(flux), axis=0)
+    f_unc = (np.sum(np.array(f_unc) ** 2, axis=0)) ** 0.5 / n_spectra
+
+    # If a reference wavelength was provided, calculate the Doppler
+    # velocities
+    if ref_wavelength is not None:
+        velocity = (wavelength - ref_wavelength) / ref_wavelength * \
+                   c.c.to(u.km / u.s).value
+        return wavelength, velocity, flux, f_unc
+    else:
+        return wavelength, flux, f_unc
+
+
+# Normalized Voigt
+def norm_voigt(a, u):
+    """
+
+    Args:
+        a:
+        u:
+
+    Returns:
+
+    """
+    z = u + 1j * a
+    return wofz(z).real
