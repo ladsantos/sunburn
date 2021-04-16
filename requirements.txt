@@ -7,3 +7,5 @@ astroplan
 costools
 stistools
 calcos
+onza
+emcee
