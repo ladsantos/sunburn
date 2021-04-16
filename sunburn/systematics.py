@@ -118,7 +118,8 @@ class Jitter(object):
     # Plot the light curve and/or the jitter data
     def plot(self, param, include_light_curve=True, norm=None, y_shift=None,
              figure_sizes=(9.0, 6.5), axes_font_size=18, plot_splits=True,
-             fold=True, lc_color=None, lc_log_flux_scale=None, **jit_kwargs):
+             fold=True, lc_color=None, lc_log_flux_scale=None,
+             transit_lines=False, **jit_kwargs):
         """
 
         Args:
@@ -130,6 +131,9 @@ class Jitter(object):
             axes_font_size:
             plot_splits:
             fold:
+            lc_color:
+            lc_log_flux_scale:
+            transit_lines:
             **jit_kwargs:
 
         Returns:
@@ -166,7 +170,8 @@ class Jitter(object):
             ax1 = self.lc.plot(figure_sizes, axes_font_size=axes_font_size,
                                plot_splits=plot_splits, fold=fold,
                                symbol_color=lc_color,
-                               log_flux_scale=lc_log_flux_scale)
+                               log_flux_scale=lc_log_flux_scale,
+                               transit_lines=transit_lines)
             ax2 = ax1.twinx()
             ax2.plot(x, y, **jit_kwargs)
         else:
