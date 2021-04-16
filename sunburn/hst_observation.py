@@ -12,6 +12,7 @@ import matplotlib.pyplot as plt
 import matplotlib.pylab as pylab
 import astropy.units as u
 import astropy.constants as c
+import astropy.uncertainty as a_unc
 import os
 import glob
 import emcee
@@ -20,6 +21,7 @@ import emcee
 from warnings import warn
 from astropy.io import fits
 from astropy.time import Time
+from astropy.stats import poisson_conf_interval
 from . import tools, spectroscopy
 from scipy.integrate import simps
 from scipy.interpolate import interp1d
@@ -216,7 +218,7 @@ class Visit(object):
             return x_axis_return, y_axis_return, y_err_return
 
     # Time-tag split the observations in the visit
-    def time_tag_split(self, n_splits, path_calibration_files, out_dir,
+    def time_tag_split(self, n_splits, out_dir,  path_calibration_files=None,
                        stis_high_res=None):
         """
 
@@ -315,10 +317,15 @@ class UVSpectrum(object):
         # Instantiating the instrument-specific global variables
         self.jit = None
         self.header = None
+        self.optical_element = None
+        self.aperture = None
         self.start_JD = None
         self.end_JD = None
+        self.exp_time = None
         self.wavelength = None
         self.flux = None
+        self.net = None
+        self.gross_counts = None
         self.error = None
         self.quality = None
         self.slit_orientation = None
@@ -326,7 +333,8 @@ class UVSpectrum(object):
     # Compute the integrated flux in a given wavelength range
     def integrated_flux(self, wavelength_range=None, velocity_range=None,
                         reference_wl=None, rv_correction=0.0,
-                        uncertainty_method='quadratic_sum'):
+                        uncertainty_method='quadratic_sum',
+                        integrate_choice='flux'):
         """
         Compute the integrated flux of the spectrum in a user-defined
         wavelength range.
@@ -354,10 +362,14 @@ class UVSpectrum(object):
                 ind = tools.pick_side(self.wavelength, wavelength_range)
                 wavelength = self.wavelength[ind]
                 flux = self.flux[ind]
+                net = self.net[ind]
+                gross = self.gross_counts[ind]
                 f_unc = self.error[ind]
             else:
                 wavelength = self.wavelength
                 flux = self.flux
+                net = self.net
+                gross = self.gross_counts
                 f_unc = self.error
         else:
             assert(reference_wl is not None and velocity_range is not None,
@@ -369,22 +381,51 @@ class UVSpectrum(object):
                 ind = tools.pick_side(self.wavelength, wavelength_range)
                 wavelength = self.wavelength[ind]
                 flux = self.flux[ind]
+                net = self.net[ind]
+                gross = self.gross_counts[ind]
                 f_unc = self.error[ind]
             else:
                 wavelength = self.wavelength
                 flux = self.flux
+                net = self.net
+                gross = self.gross_counts
                 f_unc = self.error
 
         min_wl = tools.nearest_index(wavelength, wavelength_range[0])
         max_wl = tools.nearest_index(wavelength, wavelength_range[1]) + 1
+
         # The following line is hacky, but it works
         delta_wl = wavelength[1:] - wavelength[:-1]
-        int_flux = simps(flux[min_wl:max_wl], x=wavelength[min_wl:max_wl])
+        if integrate_choice is 'flux':
+            int_flux = simps(flux[min_wl:max_wl], x=wavelength[min_wl:max_wl])
+        elif integrate_choice is 'counts':
+            int_flux = np.sum(gross[min_wl:max_wl])
+            uncertainty_method = 'poisson'
+        elif integrate_choice is 'net':
+            int_flux = np.sum(net[min_wl:max_wl])
+            uncertainty_method = 'poisson'
+        else:
+            raise ValueError('This integration choice is not implemented.')
 
         # Compute the uncertainty of the integrated flux
         if uncertainty_method == 'quadratic_sum':
             uncertainty = np.sqrt(np.sum((delta_wl[min_wl:max_wl] *
                                           f_unc[min_wl:max_wl]) ** 2))
+        elif uncertainty_method == 'poisson':
+            sensitivity = flux[min_wl:max_wl] / net[min_wl:max_wl]
+            mean_sensitivity = np.nanmean(sensitivity * delta_wl[min_wl:max_wl])
+            int_gross = np.sum(gross[min_wl:max_wl])
+            gross_unc = poisson_conf_interval(int(int_gross),
+                                              interval='root-n') - int_gross
+            if integrate_choice is 'flux':
+                uncertainty = (-gross_unc[0] + gross_unc[1]) / 2 * \
+                    mean_sensitivity / self.exp_time
+            elif integrate_choice is 'counts':
+                uncertainty = (-gross_unc[0] + gross_unc[1]) / 2
+            elif integrate_choice is 'net':
+                uncertainty = (-gross_unc[0] + gross_unc[1]) / 2 / self.exp_time
+            else:
+                raise ValueError('This integration choice is not implemented.')
         elif uncertainty_method == 'bootstrap':
             n_samples = 10000
             # Draw a sample of spectra and compute the fluxes for each
@@ -403,10 +444,54 @@ class UVSpectrum(object):
 
         return int_flux, uncertainty
 
+    # Get the spectrum data in a specific range
+    def get_spectrum(self, wavelength_range=None, velocity_range=None,
+                     ref_wl=None):
+        """
+
+        Args:
+            wavelength_range:
+            velocity_range:
+            ref_wl:
+
+        Returns:
+
+        """
+        if wavelength_range is None and velocity_range is not None and ref_wl \
+                is not None:
+            velocity_range = np.array(velocity_range)
+            wavelength_range = \
+                velocity_range / c.c.to(u.km / u.s).value * ref_wl + ref_wl
+        else:
+            raise ValueError('Either wavelength range or velocity range and '
+                             'ref_wl have to be provided.')
+
+        if self.instrument == 'cos':
+            ind = tools.pick_side(self.wavelength, wavelength_range)
+            wavelength = self.wavelength[ind]
+            flux = self.flux[ind]
+            f_unc = self.error[ind]
+        else:
+            wavelength = self.wavelength
+            flux = self.flux
+            f_unc = self.error
+
+        min_wl = tools.nearest_index(wavelength, wavelength_range[0])
+        max_wl = tools.nearest_index(wavelength, wavelength_range[1])
+        if ref_wl is not None:
+            velocity = (wavelength[min_wl:max_wl] - ref_wl) / ref_wl * \
+                       c.c.to(u.km / u.s).value
+            return wavelength[min_wl:max_wl], velocity, flux[min_wl:max_wl], \
+                f_unc[min_wl:max_wl]
+        else:
+            return wavelength[min_wl:max_wl], flux[min_wl:max_wl], \
+                   f_unc[min_wl:max_wl]
+
     # Plot the spectrum
-    def plot_spectrum(self, wavelength_range=None, chip_index=None,
-                      plot_uncertainties=False, rotate_x_ticks=30, ref_wl=None,
-                      flag=None, scale=None, **kwargs):
+    def plot_spectrum(self, wavelength_range=None, velocity_range=None,
+                      chip_index=None, plot_uncertainties=False,
+                      rotate_x_ticks=30, ref_wl=None, flag=None, scale=None,
+                      rv_shift=0.0, **kwargs):
         """
         Plot the spectrum, with the option of selecting a specific wavelength
         range or the red or blue chips of the detector. In order to visualize
@@ -447,6 +532,13 @@ class UVSpectrum(object):
         else:
             raise ValueError('``scale`` must be ``float`` or ``None``.')
 
+        if wavelength_range is None and velocity_range is not None:
+            velocity_range = np.array(velocity_range)
+            wavelength_range = \
+                velocity_range / c.c.to(u.km / u.s).value * ref_wl + ref_wl
+        else:
+            pass
+
         if wavelength_range is not None:
             if self.instrument == 'cos':
                 ind = tools.pick_side(self.wavelength, wavelength_range)
@@ -466,19 +558,21 @@ class UVSpectrum(object):
             if isinstance(ref_wl, float):
                 x_axis = c.c.to(u.km / u.s).value * \
                     (wavelength[min_wl:max_wl] - ref_wl) / ref_wl
+                x_axis += rv_shift
                 x_label = r'Velocity (km s$^{-1}$)'
             else:
                 x_axis = wavelength[min_wl:max_wl]
+                wl_shift = rv_shift / c.c.to(u.km / u.s).value * x_axis
+                x_axis += wl_shift
                 x_label = r'Wavelength ($\mathrm{\AA}$)'
 
             # Finally plot it
             if plot_uncertainties is False:
-                ax.plot(x_axis, flux[min_wl:max_wl],
-                         label=self.start_JD.value, **kwargs)
+                ax.plot(x_axis, flux[min_wl:max_wl], **kwargs)
             else:
                 ax.errorbar(x_axis, flux[min_wl:max_wl],
                              yerr=f_unc[min_wl:max_wl],
-                             fmt='.', label=self.start_JD.value, **kwargs)
+                             fmt='.', **kwargs)
 
             # Overplot a span where there is a specific flag
             if flag is not None:
@@ -496,14 +590,12 @@ class UVSpectrum(object):
                 chip_index = 1
             if plot_uncertainties is False:
                 ax.plot(self.wavelength[chip_index],
-                         self.flux[chip_index],
-                         label=self.start_JD.value, **kwargs)
+                         self.flux[chip_index], **kwargs)
             else:
                 ax.errorbar(self.wavelength[chip_index],
                              self.flux[chip_index],
                              yerr=self.error[chip_index],
-                             fmt='.',
-                             label=self.start_JD.value, **kwargs)
+                             fmt='.', **kwargs)
             ax.set_xlabel(r'Wavelength ($\mathrm{\AA}$)')
             ax.set_ylabel(y_label)
 
@@ -618,6 +710,8 @@ class COSSpectrum(UVSpectrum):
         self.corrtag_b = dataset_name + '_corrtag_b.fits'
         with fits.open(self.prefix + self.x1d) as f:
             self.header = f[0].header
+            self.optical_element = f[0].header['OPT_ELEM']
+            self.aperture = f[0].header['APERTURE']
 
         # Read some metadata from the corrtag file
         with fits.open(self.prefix + self.corrtag_a) as f:
@@ -648,6 +742,7 @@ class COSSpectrum(UVSpectrum):
 
         # Appending some important jitter information
         self.jit = self.visit_id + '_jit.fits'
+
         # Read the jitter information (only valid for a full exposure and not
         # subexposures)
         if subexposure is False:
@@ -670,7 +765,7 @@ class COSSpectrum(UVSpectrum):
                 self.jitter_data = None
                 self.jitter_columns = None
 
-        if subexposure is False:
+        if subexposure is False and self.jitter_data is not None:
             latitude = self.jitter_data['Latitude']
             longitude = self.jitter_data['Longitude']
             sin_lat = np.sin(latitude * u.deg)
@@ -1068,6 +1163,8 @@ class STISSpectrum(UVSpectrum):
         # STIS-specific variables
         with fits.open(self.prefix + self.x1d) as f:
             self.header = f[1].header
+            self.optical_element = f[0].header['OPT_ELEM']
+            self.aperture = f[0].header['APERTURE']
 
         bjd_shift = 2400000.5
         self.start_JD = Time(self.header['EXPSTART'] + bjd_shift,
@@ -1077,10 +1174,10 @@ class STISSpectrum(UVSpectrum):
         self.wavelength = self.data['WAVELENGTH'][0]
         self.flux = self.data['FLUX'][0]
         self.error = self.data['ERROR'][0]
-        self.gross_counts = self.data['GROSS'][0]
+        self.exp_time = self.header['EXPTIME']
+        self.gross_counts = self.data['GROSS'][0] * self.exp_time
         self.background = self.data['BACKGROUND'][0]
         self.net = self.data['NET'][0]
-        self.exp_time = self.header['EXPTIME']
         self.slit_orientation = 45.35 * u.deg  # Angle between the slit and the
         # reference HST angle V3 (~U3)
         self.split = None
@@ -1104,7 +1201,7 @@ class STISSpectrum(UVSpectrum):
                 self.jitter_data = None
                 self.jitter_columns = None
 
-        if subexposure is False:
+        if subexposure is False and self.jitter_data is not None:
             theta = self.slit_orientation
             v3_roll = self.jitter_data['V3_roll']
             v2_roll = self.jitter_data['V2_roll']
@@ -1136,7 +1233,7 @@ class STISSpectrum(UVSpectrum):
 
     # Time tag split the observation
     def time_tag_split(self, n_splits=None, time_bins=None, out_dir="",
-                       highres=False,
+                       highres=False, all_events=False,
                        process_raw=True,
                        path_calibration_files=None,
                        clean_intermediate_steps=True):
@@ -1193,7 +1290,8 @@ class STISSpectrum(UVSpectrum):
             inttag.inttag(
                 tagfile=self.prefix + self.dataset_name + '_tag.fits',
                 output=out_dir + self.dataset_name + '_%s_raw.fits' % str(i),
-                starttime=start_time, increment=increment, highres=highres)
+                starttime=start_time, increment=increment, highres=highres,
+                allevents=all_events)
 
     def assign_splits(self, path):
         """
@@ -1231,25 +1329,41 @@ class CombinedSpectrum(object):
     """
     def __init__(self, orbit_list, reference_wavelength, instrument,
                  wavelength_range=None, velocity_range=None, doppler_corr=None,
-                 velocity_grid=None):
+                 velocity_grid=None, cleaned_spectra=False,
+                 final_uncertainty='combine', final_flux='average'):
         self._orbits = orbit_list
         self._n_orbit = len(orbit_list)
         self._ref_wl = reference_wavelength
         self.wavelength = None
         self.velocity = None
         self.flux = None
+        self.gross = None
+        self.net = None
         self.f_unc = None
+        self.test = None
+        self.total_exp_time = 0.0
+        self.binned_wavelength = None
+        self.binned_velocity = None
+        self.binned_flux = None
+        self.binned_f_unc = None
+        self.binned_net = None
+        self.binned_gross = None
 
         if doppler_corr is None:
             doppler_corr = [0.0 for i in range(self._n_orbit)]
 
         ls = c.c.to(u.km / u.s).value
+        # if self._ref_wl is not None:
         wl_shift = [self._ref_wl * dck / ls for dck in doppler_corr]
+        # else:
+        #     wl_shift = [self._ref_wl * dck / ls for dck in doppler_corr]
 
         wavelength_list = []
         velocity_list = []
         flux_list = []
         f_unc_list = []
+        gross_list = []
+        net_list = []
 
         # Use either the wavelength range or the velocity range
         if wavelength_range is None and velocity_range is None:
@@ -1266,32 +1380,45 @@ class CombinedSpectrum(object):
         for i in range(self._n_orbit):
             # Find which side of the chip corresponds to the wavelength range
             # (only for COS)
+            self.total_exp_time += self._orbits[i].exp_time
             if instrument == 'cos':
                 ind = tools.pick_side(self._orbits[i].wavelength,
                                       wavelength_range)
                 wavelength = self._orbits[i].wavelength[ind]
-                flux = self._orbits[i].flux[ind]
-                f_unc = self._orbits[i].error[ind]
+                if cleaned_spectra is True:
+                    flux = self._orbits[i].clean_flux[ind]
+                    f_unc = self._orbits[i].clean_f_unc[ind]
+                    gross = None
+                    net = None
+                else:
+                    flux = self._orbits[i].flux[ind]
+                    f_unc = self._orbits[i].error[ind]
+                    gross = self._orbits[i].gross_counts[ind]
+                    net = self._orbits[i].net[ind]
             # In the case of STIS, there is no need to pick a chip
             else:
                 wavelength = self._orbits[i].wavelength
                 flux = self._orbits[i].flux
                 f_unc = self._orbits[i].error
+                gross = self._orbits[i].gross_counts
+                net = self._orbits[i].net
 
             # Now find which spectrum indexes correspond to the requested
             # wavelength
-            min_wl = tools.nearest_index(wavelength,
-                                         wavelength_range[0] - wl_shift[i])
-            max_wl = tools.nearest_index(wavelength,
-                                         wavelength_range[1] - wl_shift[i])
+            min_wl = tools.nearest_index(wavelength + wl_shift[i],
+                                         wavelength_range[0])
+            max_wl = tools.nearest_index(wavelength + wl_shift[i],
+                                         wavelength_range[1])
 
             # Finally add the spectrum to the list
             velocity = (wavelength[min_wl:max_wl] - self._ref_wl) / \
                 self._ref_wl * ls + doppler_corr[i]
             velocity_list.append(velocity)
-            wavelength_list.append(wavelength[min_wl:max_wl])
+            wavelength_list.append(wavelength[min_wl:max_wl] + wl_shift[i])
             flux_list.append(flux[min_wl:max_wl])
             f_unc_list.append(f_unc[min_wl:max_wl])
+            gross_list.append(gross[min_wl:max_wl])
+            net_list.append(net[min_wl:max_wl])
 
         # Finally combine the spectra
         # If the velocity grid was not specified, just use the one from the
@@ -1301,27 +1428,134 @@ class CombinedSpectrum(object):
 
         self.velocity = velocity_grid
         for i in range(self._n_orbit):
-            fw = interp1d(velocity_list[i], wavelength_list[i], kind='cubic',
+            fw = interp1d(velocity_list[i], wavelength_list[i], kind='linear',
+                          bounds_error=False, fill_value='extrapolate')
+            ff = interp1d(velocity_list[i], flux_list[i], kind='linear',
                           bounds_error=False, fill_value=1E-18)
-            ff = interp1d(velocity_list[i], flux_list[i], kind='cubic',
+            fu = interp1d(velocity_list[i], f_unc_list[i], kind='linear',
                           bounds_error=False, fill_value=1E-18)
-            fu = interp1d(velocity_list[i], f_unc_list[i], kind='cubic',
+            fg = interp1d(velocity_list[i], gross_list[i], kind='linear',
+                          bounds_error=False, fill_value=1E-18)
+            fn = interp1d(velocity_list[i], net_list[i], kind='linear',
                           bounds_error=False, fill_value=1E-18)
             velocity_list[i] = velocity_grid
             wavelength_list[i] = fw(velocity_grid)
             flux_list[i] = ff(velocity_grid)
             f_unc_list[i] = fu(velocity_grid)
+            gross_list[i] = fg(velocity_grid)
+            net_list[i] = fn(velocity_grid)
         self.wavelength = wavelength_list[0]
-        self.flux = np.median(np.array(flux_list), axis=0)
-        self.f_unc = (np.sum(np.array(f_unc_list) ** 2, axis=0)) ** 0.5 / \
-            self._n_orbit
+        self.test = np.array(flux_list)
+
+        # Calculating the final flux. There are two options: 1) Regular average,
+        # or 2) Weighted average.
+        if final_flux == 'average' or final_flux == 'mean':
+            self.flux = np.mean(np.array(flux_list), axis=0)
+            self.net = np.mean(np.array(net_list), axis=0)
+        elif final_flux == 'weighted':
+            self.flux = np.sum(np.array(flux_list) * np.array(f_unc_list),
+                               axis=0) / np.sum(np.array(f_unc_list), axis=0)
+            self.net = np.sum(np.array(net_list) * np.array(f_unc_list),
+                               axis=0) / np.sum(np.array(f_unc_list), axis=0)
+
+        # Calculating the final gross counts and "sensitivity"
+        self.gross = np.sum(np.array(gross_list), axis=0)
+
+        # Calculating uncertainties. There are three options: 1) Simply combining
+        # the tabulated uncertainties at face value, 2) Calculating the standard
+        # deviation of the measured fluxes, or 3) Drawing samples and
+        # calculating the percentiles of the sample.
+        if final_uncertainty == 'combine':
+            self.f_unc = (np.sum(np.array(f_unc_list) ** 2, axis=0) /
+                          self._n_orbit) ** 0.5
+        elif final_uncertainty == 'poisson':
+            combined_gross = np.zeros_like(self.wavelength)
+            sensitivity = np.nanmean(
+                np.array([flux_list[i] / net_list[i]
+                         for i in range(self._n_orbit)]), axis=0)
+            for i in range(self._n_orbit):
+                combined_gross += gross_list[i]
+            combined_gross_unc = []
+            for k in range(len(self.wavelength)):
+                if combined_gross[k] < 0:
+                    combined_gross[k] *= (-1)
+                sample = a_unc.poisson(combined_gross[k], 1000)
+                combined_gross_unc.append(sample.pdf_std())
+            combined_gross_unc = np.array(combined_gross_unc)
+            self.f_unc = combined_gross_unc / self.total_exp_time * sensitivity
+        elif final_uncertainty == 'stdev':
+            self.f_unc = np.std(np.array(flux_list), axis=0)
+        elif final_uncertainty == 'sample':
+            # For each wavelength bin and each exposure, we draw a random sample
+            # of 500 measurements with mu = flux and sigma = uncertainty in a
+            # particular exposure.
+            self.f_unc = np.zeros_like(self.wavelength)
+            for i in range(len(self.wavelength)):
+                sample_all = []
+                for k in range(len(f_unc_list)):
+                    sample_all.append(np.random.normal(loc=self.flux[i],
+                                      scale=f_unc_list[k][i], size=500))
+                sample_all = np.array(sample_all)
+                result = np.percentile(sample_all, [16, 50, 84])
+                q = np.diff(result)
+                self.f_unc[i] += (q[0] + q[1]) / 2
+        else:
+            raise ValueError('This options of `uncertainty` is not valid. Use '
+                             'either `"combine"` or `"sample"`.')
+
+    # Bin the spectrum
+    def bin_spectrum(self, velocity_bin_width=5, uncertainty_regime='gaussian'):
+        """
+
+        Args:
+            velocity_bin_width:
+            uncertainty_regime:
+
+        Returns:
+
+        """
+        gross = self.gross
+        net = self.net
+        ds = self.velocity
+        wv = self.wavelength
+        f = self.flux
+        fu = self.f_unc
+        bw = velocity_bin_width
+
+        self.binned_wavelength, self.binned_velocity, \
+            self.binned_flux, self.binned_f_unc = tools.bin_spectrum(
+                bw, wv, ds, f, fu)
+
+        if uncertainty_regime == 'poisson':
+            v_bins = np.arange(min(ds), max(ds) + bw, bw)
+            dwl = np.concatenate(
+                (wv[1:] - wv[:-1], np.array([wv[-1] - wv[-2], ])))
+            sensitivity = (self.flux / self.net) * dwl
+            binned_sensitivity, edges, inds = binned_statistic(ds, sensitivity,
+                                                            bins=v_bins,
+                                                            statistic='mean')
+            self.binned_gross, edges, inds = binned_statistic(ds, gross,
+                                                              bins=v_bins,
+                                                              statistic='sum')
+            wv_bin = self.binned_wavelength
+            dwl_bin = np.concatenate(
+                (wv_bin[1:] - wv_bin[:-1], np.array([wv_bin[-1] -
+                                                     wv_bin[-2], ])))
+            limits = poisson_conf_interval(self.binned_gross)
+            limits[0] -= self.binned_gross
+            limits[1] -= self.binned_gross
+            mean_sigma = (-limits[0] + limits[1]) / 2
+            self.binned_f_unc = mean_sigma / self.total_exp_time * \
+                binned_sensitivity / dwl_bin
+        else:
+            pass
 
     # Plot the combined spectrum
-    def plot_spectrum(self, wavelength_range=None, chip_index=None,
+    def plot_spectrum(self, wavelength_range=None,
                       uncertainties=False, figure_sizes=(9.0, 6.5),
                       axes_font_size=18, legend_font_size=13, rotate_x_ticks=30,
                       label=None, barplot=False, velocity_space=False,
-                      line_center=None, scale=None, **kwargs):
+                      scale=None, **kwargs):
         """
 
         Args:
@@ -1335,7 +1569,6 @@ class CombinedSpectrum(object):
             label:
             barplot:
             velocity_space:
-            line_center:
             scale:
             **kwargs:
 
@@ -1345,37 +1578,29 @@ class CombinedSpectrum(object):
         pylab.rcParams['figure.figsize'] = figure_sizes[0], figure_sizes[1]
         pylab.rcParams['font.size'] = axes_font_size
 
-        # Figure out the wavelength range
-        if wavelength_range is None:
-            k = chip_index
-            try:
-                wavelength_range = [min(self.wavelength[k]) + 1,
-                                    max(self.wavelength[k]) - 1]
-            except TypeError:
-                raise ValueError('Either the wavelength range or the chip'
-                                 'index have to be provided.')
-        else:
-            pass
+        line_center = self._ref_wl
 
-        # Find which side of the chip corresponds to the wavelength range
-        ind = tools.pick_side(self.wavelength, wavelength_range)
-        # Now find which spectrum indexes correspond to the requested
-        # wavelength
-        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
-        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+        if wavelength_range is None:
+            min_wl = 0
+            max_wl = -1
+        else:
+            # Now find which spectrum indexes correspond to the requested
+            # wavelength
+            min_wl = tools.nearest_index(self.wavelength, wavelength_range[0])
+            max_wl = tools.nearest_index(self.wavelength, wavelength_range[1])
 
         # Figure out the x- and y-axes values
         if velocity_space is False:
-            x_values = self.wavelength[ind][min_wl:max_wl]
+            x_values = self.wavelength[min_wl:max_wl]
             x_label = r'Wavelength ($\mathrm{\AA}$)'
         else:
             ls = c.c.to(u.km / u.s).value
-            x_values = (self.wavelength[ind][min_wl:max_wl] - line_center) / \
+            x_values = (self.wavelength[min_wl:max_wl] - line_center) / \
                 line_center * ls
             x_label = r'Velocity (km s$^{-1}$)'
         delta_x = x_values[1] - x_values[0]
 
-        if scale is not None:
+        if scale is None:
             scale = 1
             y_label = r'Flux density (erg s$^{-1}$ cm$^{-2}$ ' \
                       r'$\mathrm{\AA}^{-1}$)'
@@ -1387,8 +1612,8 @@ class CombinedSpectrum(object):
         else:
             raise ValueError('``scale`` must be ``float``.')
 
-        y_values = self.flux[ind][min_wl:max_wl] / scale
-        y_err = self.f_unc[ind][min_wl:max_wl] / scale
+        y_values = self.flux[min_wl:max_wl] / scale
+        y_err = self.f_unc[min_wl:max_wl] / scale
 
         # Finally plot it
         if uncertainties is False:
@@ -1413,7 +1638,8 @@ class CombinedSpectrum(object):
             plt.tight_layout()
 
     # Compute the integrated flux of the spectrum in a given wavelength range
-    def integrate_flux(self, wavelength_range):
+    def integrate_flux(self, wavelength_range,
+                       uncertainty_method='quadratic_sum'):
         """
 
         Args:
@@ -1422,16 +1648,32 @@ class CombinedSpectrum(object):
         Returns:
 
         """
-        ind = tools.pick_side(self.wavelength, wavelength_range)
 
-        min_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[0])
-        max_wl = tools.nearest_index(self.wavelength[ind], wavelength_range[1])
+        min_wl = tools.nearest_index(self.wavelength, wavelength_range[0])
+        max_wl = tools.nearest_index(self.wavelength, wavelength_range[1])
         # The following line is hacky, but it works
-        delta_wl = self.wavelength[ind][1:] - self.wavelength[ind][:-1]
-        int_flux = simps(self.flux[ind][min_wl:max_wl],
-                         x=self.wavelength[ind][min_wl:max_wl])
-        uncertainty = np.sqrt(np.sum((delta_wl[min_wl:max_wl] *
-                                      self.f_unc[ind][min_wl:max_wl]) ** 2))
+        delta_wl = self.wavelength[1:] - self.wavelength[:-1]
+        int_flux = simps(self.flux[min_wl:max_wl],
+                         x=self.wavelength[min_wl:max_wl])
+
+        # Calculating uncertainty
+        if uncertainty_method == 'quadratic_sum':
+            uncertainty = np.sqrt(np.sum((delta_wl[min_wl:max_wl] *
+                                          self.f_unc[min_wl:max_wl]) ** 2))
+        elif uncertainty_method == 'poisson':
+            delta_wl = np.concatenate(
+                (self.wavelength[1:] - self.wavelength[:-1],
+                 np.array([self.wavelength[-1] - self.wavelength[-2], ])))
+            sensitivity = self.flux[min_wl:max_wl] / self.net[min_wl:max_wl]
+            mean_sensitivity = np.nanmean(sensitivity * delta_wl[min_wl:max_wl])
+            int_gross = np.sum(self.gross[min_wl:max_wl])
+            gross_unc = poisson_conf_interval(int(int_gross),
+                                              interval='root-n') - int_gross
+            uncertainty = (-gross_unc[0] + gross_unc[1]) / 2 * \
+                mean_sensitivity / self.total_exp_time
+        else:
+            raise ValueError('This uncertainty method is not implemented.')
+
         return int_flux, uncertainty
 
 
@@ -1733,8 +1975,8 @@ class ContaminatedLine(SpectralLine):
 
     # Fit airglow template to observed line within a specific range of the
     # spectrum
-    def fit_template(self, velocity_range, shift_guess,
-                     scales_guess, shift_bounds=(None, None),
+    def fit_template(self, velocity_range, shift_guess, scales_guess,
+                     fixed_shift=False, shift_bounds=(None, None),
                      scale_bounds=(None, None), fill_value=1E-18,
                      perform_mcmc=False, n_walkers=10, n_steps=500,
                      maxiter_minimize=500, neg_flux_severity=100):
@@ -1744,6 +1986,7 @@ class ContaminatedLine(SpectralLine):
             velocity_range:
             shift_guess:
             scales_guess:
+            fixed_shift:
             shift_bounds:
             scale_bounds:
             fill_value:
@@ -1757,11 +2000,30 @@ class ContaminatedLine(SpectralLine):
 
         """
         # Find the indexes of the velocity_range
-        min_v = tools.nearest_index(self.velocity[0], velocity_range[0])
-        max_v = tools.nearest_index(self.velocity[0], velocity_range[1])
+        min_v = []
+        max_v = []
+        if isinstance(velocity_range, list):
+            n_pass = 1
+            min_v.append(
+                tools.nearest_index(self.velocity[0], velocity_range[0]))
+            max_v.append(
+                tools.nearest_index(self.velocity[0], velocity_range[1]))
+        elif isinstance(velocity_range, np.ndarray):
+            n_pass = np.shape(velocity_range)[0]
+            for i in range(n_pass):
+                min_v.append(
+                    tools.nearest_index(self.velocity[0], velocity_range[i, 0]))
+                max_v.append(
+                    tools.nearest_index(self.velocity[0], velocity_range[i, 1]))
+        else:
+            raise TypeError('Wrong format for ``velocity_range``.')
 
         # The badness of the fit function
         def _lnlike(params):
+            if fixed_shift is True:
+                params[0] = shift_guess
+            else:
+                pass
             badness = []
             # For each observation...
             for i in range(self.n_spectra):
@@ -1785,17 +2047,18 @@ class ContaminatedLine(SpectralLine):
 
                 temp_badness = 0
                 # Add the badness of the core fit
-                lnlike = -0.5 * (np.sum(diff[min_v:max_v] ** 2 *
-                                        weight[min_v:max_v] -
-                                        np.log(weight[min_v:max_v])))
-                temp_badness += lnlike
-                # Also punish the airglow model if the resulting cleaned spectra
-                # has negative flux
-                f_clip = np.clip(diff, a_min=None, a_max=0)
-                int_f_clip = simps(f_clip, self.wavelength[i])
-                int_u_clean = simps(u_diff * 1E13, self.wavelength[i])
-                punish = neg_flux_severity * int_f_clip / int_u_clean
-                badness.append(temp_badness + punish)
+                for k in range(n_pass):
+                    lnlike = -0.5 * (np.sum(diff[min_v[k]:max_v[k]] ** 2 *
+                                            weight[min_v[k]:max_v[k]] -
+                                            np.log(weight[min_v[k]:max_v[k]])))
+                    temp_badness += lnlike
+                    # Also punish the airglow model if the resulting cleaned
+                    # spectra has negative flux
+                    f_clip = np.clip(diff, a_min=None, a_max=0)
+                    int_f_clip = simps(f_clip, self.wavelength[i])
+                    int_u_clean = simps(u_diff * 1E13, self.wavelength[i])
+                    punish = neg_flux_severity * int_f_clip / int_u_clean
+                    badness.append(temp_badness + punish)
 
             badness = np.array(badness)
             return np.sum(badness)
