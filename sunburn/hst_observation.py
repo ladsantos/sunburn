@@ -30,6 +30,7 @@ from scipy.stats import binned_statistic
 from costools import splittag, x1dcorr
 from stistools import inttag
 from calcos.x1d import concatenateSegments
+from stissplice import splicer
 
 __all__ = ["Visit", "UVSpectrum", "COSSpectrum", "STISSpectrum",
            "CombinedSpectrum", "SpectralLine", "ContaminatedLine",
@@ -57,7 +58,8 @@ class Visit(object):
             chip. If ``None``, use all pixels. Default is ``None``.
     """
     def __init__(self, dataset_name, instrument, good_pixel_limits=None,
-                 prefix=None, compute_proper_error=True, flux_debias=None):
+                 prefix=None, compute_proper_error=True, flux_debias=None,
+                 echelle_mode=False):
 
         self.orbit = {}
         self.split = {}
@@ -88,7 +90,8 @@ class Visit(object):
                     pass
             elif instrument == 'stis':
                 self.orbit[dataset_name[i]] = \
-                    STISSpectrum(dataset_name[i], prefix=prefix)
+                    STISSpectrum(dataset_name[i], prefix=prefix,
+                                 echelle_mode=echelle_mode)
 
     # Plot all the spectra in a wavelength range
     def plot_spectra(self, wavelength_range=None, velocity_range=None,
@@ -372,9 +375,9 @@ class UVSpectrum(object):
                 gross = self.gross_counts
                 f_unc = self.error
         else:
-            assert(reference_wl is not None and velocity_range is not None,
-                   'Reference wavelength and RV range must be provided '
-                   'if you did not pick a wavelength range.')
+            assert reference_wl is not None and velocity_range is not None, \
+                   'Reference wavelength and RV range must be provided ' \
+                   'if you did not pick a wavelength range.'
             velocity_range += rv_correction
             wavelength_range = velocity_range * reference_wl / ls + reference_wl
             if self.instrument == 'cos':
@@ -390,18 +393,17 @@ class UVSpectrum(object):
                 net = self.net
                 gross = self.gross_counts
                 f_unc = self.error
-
         min_wl = tools.nearest_index(wavelength, wavelength_range[0])
         max_wl = tools.nearest_index(wavelength, wavelength_range[1]) + 1
 
         # The following line is hacky, but it works
         delta_wl = wavelength[1:] - wavelength[:-1]
-        if integrate_choice is 'flux':
+        if integrate_choice == 'flux':
             int_flux = simps(flux[min_wl:max_wl], x=wavelength[min_wl:max_wl])
-        elif integrate_choice is 'counts':
+        elif integrate_choice == 'counts':
             int_flux = np.sum(gross[min_wl:max_wl])
             uncertainty_method = 'poisson'
-        elif integrate_choice is 'net':
+        elif integrate_choice == 'net':
             int_flux = np.sum(net[min_wl:max_wl])
             uncertainty_method = 'poisson'
         else:
@@ -417,12 +419,12 @@ class UVSpectrum(object):
             int_gross = np.sum(gross[min_wl:max_wl])
             gross_unc = poisson_conf_interval(int(int_gross),
                                               interval='root-n') - int_gross
-            if integrate_choice is 'flux':
+            if integrate_choice == 'flux':
                 uncertainty = (-gross_unc[0] + gross_unc[1]) / 2 * \
                     mean_sensitivity / self.exp_time
-            elif integrate_choice is 'counts':
+            elif integrate_choice == 'counts':
                 uncertainty = (-gross_unc[0] + gross_unc[1]) / 2
-            elif integrate_choice is 'net':
+            elif integrate_choice == 'net':
                 uncertainty = (-gross_unc[0] + gross_unc[1]) / 2 / self.exp_time
             else:
                 raise ValueError('This integration choice is not implemented.')
@@ -874,8 +876,9 @@ class COSSpectrum(UVSpectrum):
             # Extract the tag-split spectra
             split_list = glob.glob(out_dir + self.dataset_name +
                                    '_?_?_corrtag.fits')
+            out_dir = out_dir
             for item in split_list:
-                x1dcorr.x1dcorr(input=item, outdir=out_dir)
+                x1dcorr.x1dcorr(item, outdir=out_dir)
 
             # Clean the intermediate steps files
             if clean_intermediate_steps is True:
@@ -1156,9 +1159,11 @@ class STISSpectrum(UVSpectrum):
             For example, if the 1-d extracted spectrum file is named
             ``'foo_x1d.fits'``, then the dataset name is ``'foo'``.
     """
-    def __init__(self, dataset_name, prefix=None, subexposure=False):
+    def __init__(self, dataset_name, prefix=None, subexposure=False,
+                 echelle_mode=False):
         super(STISSpectrum, self).__init__(dataset_name, prefix=prefix)
         self.instrument = 'stis'
+        self.echelle_mode = echelle_mode
 
         # STIS-specific variables
         with fits.open(self.prefix + self.x1d) as f:
@@ -1171,13 +1176,23 @@ class STISSpectrum(UVSpectrum):
                              format='jd')
         self.end_JD = Time(self.header['EXPEND'] + bjd_shift,
                            format='jd')
-        self.wavelength = self.data['WAVELENGTH'][0]
-        self.flux = self.data['FLUX'][0]
-        self.error = self.data['ERROR'][0]
-        self.exp_time = self.header['EXPTIME']
-        self.gross_counts = self.data['GROSS'][0] * self.exp_time
-        self.background = self.data['BACKGROUND'][0]
-        self.net = self.data['NET'][0]
+        if self.echelle_mode is False:
+            self.wavelength = self.data['WAVELENGTH'][0]
+            self.flux = self.data['FLUX'][0]
+            self.error = self.data['ERROR'][0]
+            self.exp_time = self.header['EXPTIME']
+            self.gross_counts = self.data['GROSS'][0] * self.exp_time
+            self.background = self.data['BACKGROUND'][0]
+            self.net = self.data['NET'][0]
+        else:
+            spec_table = splicer.splice_pipeline(dataset_name, prefix)
+            self.wavelength = spec_table['WAVELENGTH'].data
+            self.flux = spec_table['FLUX'].data
+            self.error = spec_table['ERROR'].data
+            self.exp_time = self.header['EXPTIME']
+            self.gross_counts = self.data['GROSS'] * self.exp_time
+            self.background = self.data['BACKGROUND']
+            self.net = self.data['NET']
         self.slit_orientation = 45.35 * u.deg  # Angle between the slit and the
         # reference HST angle V3 (~U3)
         self.split = None
@@ -1318,7 +1333,8 @@ class STISSpectrum(UVSpectrum):
             offset = len(path)
             dataset_name = split_list[i][offset:offset + 11]
             split_obs = STISSpectrum(dataset_name, prefix=path,
-                                     subexposure=True)
+                                     subexposure=True,
+                                     echelle_mode=self.echelle_mode)
             self.split.append(split_obs)
 
 

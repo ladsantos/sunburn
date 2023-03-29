@@ -102,6 +102,10 @@ class COSFUVLineList(object):
             'Si IV': [Line(1393.755, formation_temperature=10 ** 4.9,
                            line_width=0.15),
                       Line(1402.770, formation_temperature=10 ** 4.9,
+                           line_width=0.05)],
+            'Mg II': [Line(2796.352, formation_temperature=10 ** 4.9,
+                           line_width=0.15),
+                      Line(2803.531, formation_temperature=10 ** 4.9,
                            line_width=0.05)]
         }
 

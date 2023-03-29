@@ -72,7 +72,7 @@ class Jitter(object):
             # First add the time
             self.jitter_time.extend(
                 orbit.start_JD.jd + (
-                        orbit.jitter_data['Seconds'].astype(np.float128)
+                        orbit.jitter_data['Seconds'].astype(np.float64)
                         * u.s).to(u.d).value)
 
             # Add the phases in relation to the transit
